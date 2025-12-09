@@ -23,24 +23,12 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <sys/types.h>
-#ifdef _WIN32
-  #include <winsock2.h>
-  #include <ws2tcpip.h>
-#else
-  #include <sys/socket.h>
-#endif
-#ifndef _WIN32
-#include <sys/ioctl.h>
-#endif
+#include "windows_compat.h"
 #include <sys/time.h>
 #ifndef _WIN32
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#endif
-#include <netdb.h>
 #include <net/if_arp.h>
-#include <net/if.h>
 #include <netinet/ip.h>
+#endif
 #include <ifaddrs.h>
 #include <semaphore.h>
 #include <string.h>

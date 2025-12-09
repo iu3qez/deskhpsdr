@@ -25,16 +25,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#ifdef _WIN32
-  #include <winsock2.h>
-  #include <ws2tcpip.h>
-#else
-  #include <sys/socket.h>
-#endif
-#ifndef _WIN32
-#include <net/if.h>
-#include <arpa/inet.h>
-#endif
+#include "windows_compat.h"
 #include <string.h>
 #include <unistd.h>
 #include <curl/curl.h>

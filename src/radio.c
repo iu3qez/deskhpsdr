@@ -27,20 +27,8 @@
 #include <math.h>
 #include <sys/time.h>
 #include <sys/types.h>
-#ifdef _WIN32
-  #include <winsock2.h>
-  #include <ws2tcpip.h>
-#else
-  #include <sys/socket.h>
-#endif
-#ifndef _WIN32
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
-#endif
+#include "windows_compat.h"
 #include <termios.h>
-#include <unistd.h>
-#include <sys/ioctl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>

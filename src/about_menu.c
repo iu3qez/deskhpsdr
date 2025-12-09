@@ -24,18 +24,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#ifdef _WIN32
-  #include <winsock2.h>
-  #include <ws2tcpip.h>
-#else
-  #include <sys/socket.h>
-#endif
-#ifndef _WIN32
-  #include <netinet/in.h>
-  #include <arpa/inet.h>
-#endif
-#include <wdsp.h>             // only needed for GetWDSPVersion
-#include <sys/utsname.h>
+#include "windows_compat.h"
+#include <wdsp.h>
 
 #include "new_menu.h"
 #include "about_menu.h"

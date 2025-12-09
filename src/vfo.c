@@ -26,12 +26,10 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
-#include <net/if_arp.h>
-#include <net/if.h>
+#include "windows_compat.h"
+#ifndef _WIN32
 #include <ifaddrs.h>
+#endif
 #include "appearance.h"
 #include "discovered.h"
 #include "main.h"

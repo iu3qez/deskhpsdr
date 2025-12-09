@@ -65,11 +65,7 @@
 #include <signal.h>
 #include <stdint.h>
 #include <string.h>
-#ifndef _WIN32
-#include <unistd.h>
-#else
-#include <io.h>
-#endif
+#include "windows_compat.h"
 #include <fcntl.h>
 #include <math.h>
 #include <pthread.h>
@@ -77,12 +73,8 @@
 #include <sys/mman.h>
 #include <sys/time.h>
 #ifndef _WIN32
-#include <sys/ioctl.h>
-#endif
-#include <sys/socket.h>
-#include <netinet/in.h>
 #include <netinet/tcp.h>
-#include <arpa/inet.h>
+#endif
 #ifdef __APPLE__
   #include "MacOS.h"  // emulate clock_gettime on old MacOS systems
 #endif

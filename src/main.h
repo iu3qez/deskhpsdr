@@ -22,7 +22,7 @@
 #ifndef _MAIN_H
 #define _MAIN_H
 
-#include <sys/utsname.h>
+#include "windows_compat.h"
 extern struct utsname unameData;
 
 enum _controller_enum {

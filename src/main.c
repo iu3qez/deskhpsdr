@@ -31,23 +31,7 @@
 #include <string.h>
 #include <semaphore.h>
 
-#ifdef _WIN32
-  #include <winsock2.h>
-  #include <windows.h>
-#else
-#ifdef _WIN32
-  #include <winsock2.h>
-  #include <ws2tcpip.h>
-#else
-  #include <sys/socket.h>
-#endif
-  #include <sys/types.h>
-  #include <sys/resource.h>
-#ifndef _WIN32
-  #include <netinet/in.h>
-  #include <arpa/inet.h>
-#endif
-#endif
+#include "windows_compat.h"
 
 #include <curl/curl.h>
 #include <pthread.h>
@@ -723,6 +707,15 @@ static int init(void *data) {
   }
 #endif
 
+
+#ifdef _WIN32
+  WSADATA wsaData;
+  if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+      g_printerr("WSAStartup failed.\n");
+      return 1;
+  }
+#endif
+
   t_print("%s\n", __FUNCTION__);
   t_print("LC_ALL=%s\n", setlocale(LC_ALL, NULL));
   t_print("LC_NUMERIC=%s\n", setlocale(LC_NUMERIC, NULL));
@@ -985,6 +978,7 @@ static void activate_deskhpsdr(GtkApplication *app, gpointer data) {
 }
 
 int main(int argc, char **argv) {
+  windows_socket_init();
 #if !defined(__WAYLAND__)
   enforce_x11_backend_policy();
 #endif
@@ -1035,6 +1029,7 @@ int main(int argc, char **argv) {
   g_mutex_clear(&vfo_timer.lock);
   g_mutex_clear(&vfoa_timer.lock);
   g_mutex_clear(&vfob_timer.lock);
+  windows_socket_cleanup();
   return rc;
 }
 

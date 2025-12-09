@@ -27,16 +27,10 @@
 #include <gtk/gtk.h>
 #include <gdk/gdk.h>
 
-#ifdef _WIN32
-  #include <winsock2.h>
-  #include <ws2tcpip.h>
-#else
-  #include <sys/socket.h>
-#endif
+#include "windows_compat.h"
 #ifndef _WIN32
-#include <arpa/inet.h>
-#endif
 #include <netinet/tcp.h>
+#endif
 #include <ctype.h>
 #include <stdio.h>
 #include <signal.h>

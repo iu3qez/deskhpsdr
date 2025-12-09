@@ -36,7 +36,7 @@
 #define __saturnserver_h
 
 #include <stdint.h>
-#include <netinet/in.h>
+#include "windows_compat.h"
 
 // START threaddata.h
 //

@@ -76,16 +76,10 @@
 
 #include <math.h>
 
-#ifdef _WIN32
-  #include <winsock2.h>
-  #include <ws2tcpip.h>
-#else
-  #include <sys/socket.h>
-#endif
-#include <arpa/inet.h> //inet_addr
+#include "windows_compat.h"
+#ifndef _WIN32
 #include <netinet/tcp.h>
-
-#include <netinet/in.h>
+#endif
 #include <pthread.h>
 #include <json-c/json.h>
 

@@ -23,24 +23,10 @@
 #include <glib.h>
 #include <glib/gprintf.h>
 #include <math.h>
-#ifndef _WIN32
-#include <unistd.h>
-#else
-#include <io.h>
-#endif
+#include "windows_compat.h"
 #include <stdlib.h>
 #include <string.h>
 #include <semaphore.h>
-#ifdef _WIN32
-  #include <winsock2.h>
-  #include <ws2tcpip.h>
-#else
-  #include <sys/socket.h>
-#endif
-#ifndef _WIN32
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#endif
 
 #include "radio.h"
 #include "main.h"

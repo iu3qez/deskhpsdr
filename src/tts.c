@@ -55,21 +55,8 @@
 
 #include <gtk/gtk.h>
 
-#ifndef _WIN32
-#include <unistd.h>
-#else
-#include <io.h>
-#endif
+#include "windows_compat.h"
 #include <string.h>
-#ifdef _WIN32
-  #include <winsock2.h>
-  #include <ws2tcpip.h>
-#else
-  #include <sys/socket.h>
-#endif
-#ifndef _WIN32
-#include <netinet/in.h>
-#endif
 
 #include "message.h"
 #include "radio.h"
