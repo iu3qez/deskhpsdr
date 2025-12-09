@@ -26,8 +26,8 @@
 #include "windows_compat.h"
 #ifndef _WIN32
 #include <net/if_arp.h>
-#endif
 #include <ifaddrs.h>
+#endif
 #include <string.h>
 #include <errno.h>
 
