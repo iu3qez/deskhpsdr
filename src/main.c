@@ -31,7 +31,9 @@
 #include <string.h>
 #include <semaphore.h>
 
-#include "windows_compat.h"
+#ifndef _WIN32
+#include <sys/resource.h>
+#endif
 
 #include <curl/curl.h>
 #include <pthread.h>
@@ -699,22 +701,7 @@ static int init(void *data) {
   char wisdom_directory[1025];
   char text[1024];
 
-#ifdef _WIN32
-  WSADATA wsaData;
-  if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-      g_printerr("WSAStartup failed.\n");
-      return 1;
-  }
-#endif
-
-
-#ifdef _WIN32
-  WSADATA wsaData;
-  if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-      g_printerr("WSAStartup failed.\n");
-      return 1;
-  }
-#endif
+// Windows socket initialization is now handled by windows_socket_init() called at the start of main()
 
   t_print("%s\n", __FUNCTION__);
   t_print("LC_ALL=%s\n", setlocale(LC_ALL, NULL));
@@ -1010,11 +997,13 @@ int main(int argc, char **argv) {
   //
   startup(argv[0]);
   setlocale(LC_ALL, "C");
+#ifndef _WIN32
   rc = getpriority(PRIO_PROCESS, 0);
   t_print("Base priority on startup: %d\n", rc);
   setpriority(PRIO_PROCESS, 0, -10);
   rc = getpriority(PRIO_PROCESS, 0);
   t_print("Base priority after adjustment: %d\n", rc);
+#endif
   t_print("%s: init global cURL...\n", __FUNCTION__);
   curl_global_init(CURL_GLOBAL_ALL);
   toolset_init();

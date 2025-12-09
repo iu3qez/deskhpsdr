@@ -185,12 +185,16 @@
 #endif
 #include <stdint.h>
 #include <fcntl.h>
+#ifndef _WIN32
 #include <poll.h>
+#endif
 #include <sched.h>
 #include <pthread.h>
 #include <semaphore.h>
 #include <time.h>
+#ifndef _WIN32
 #include <sys/mman.h>
+#endif
 
 #include "main.h"
 #include "gpio.h"
@@ -618,7 +622,11 @@ static void* keyer_thread(void *arg) {
         loop_delay.tv_sec++;
       }
 
+#ifdef _WIN32
+        Sleep(1);
+#else
       clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &loop_delay, NULL);
+#endif
     }
   }
 

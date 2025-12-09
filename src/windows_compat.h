@@ -28,6 +28,10 @@
     int uname(struct utsname *n);
     void windows_socket_init(void);
     void windows_socket_cleanup(void);
+
+    // Map usleep to Sleep (which takes milliseconds)
+    // usleep takes microseconds, so we divide by 1000
+    #define usleep(x) Sleep((x)/1000)
 #else
     // POSIX systems
     #include <sys/socket.h>
