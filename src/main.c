@@ -35,6 +35,12 @@
 #include <sys/resource.h>
 #endif
 
+#include "main.h"
+
+// curl may include windows headers that redefine SNB, so we must be careful.
+// By including main.h first, we get windows_compat.h which includes windows.h.
+// Ideally, we want windows_compat.h to undef SNB *after* windows.h is included.
+// However, curl/curl.h might re-include things.
 #include <curl/curl.h>
 #include <pthread.h>
 
