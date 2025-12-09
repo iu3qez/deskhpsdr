@@ -45,12 +45,18 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#ifndef _WIN32
 #include <unistd.h>
+#else
+#include <io.h>
+#endif
 #include <pcap.h>
 #include <errno.h>
 #include <sys/socket.h>
+#ifndef _WIN32
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#endif
 #include <netinet/if_ether.h>
 #include <fcntl.h>
 #include <net/if_dl.h>

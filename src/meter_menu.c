@@ -23,7 +23,11 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdlib.h>
+#ifndef _WIN32
 #include <unistd.h>
+#else
+#include <io.h>
+#endif
 
 #include "new_menu.h"
 #include "receiver.h"

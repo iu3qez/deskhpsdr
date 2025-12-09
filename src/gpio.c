@@ -28,7 +28,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#ifndef _WIN32
 #include <unistd.h>
+#else
+#include <io.h>
+#endif
 #include <stdint.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -38,7 +42,9 @@
   #include <gpiod.h>
   #include <linux/i2c-dev.h>
   #include <i2c/smbus.h>
+#ifndef _WIN32
   #include <sys/ioctl.h>
+#endif
 #endif
 
 #include "band.h"

@@ -48,11 +48,20 @@
 #include <pthread.h>
 #include <termios.h>
 #include <sys/time.h>
+#ifndef _WIN32
 #include <sys/ioctl.h>
-#include <sys/socket.h>
+#endif
+#ifdef _WIN32
+  #include <winsock2.h>
+  #include <ws2tcpip.h>
+#else
+  #include <sys/socket.h>
+#endif
+#ifndef _WIN32
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <net/if.h>
+#endif
 #include <semaphore.h>
 
 #include "saturnregisters.h"              // register I/O for Saturn

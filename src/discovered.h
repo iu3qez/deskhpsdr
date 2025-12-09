@@ -22,7 +22,9 @@
 #ifndef _DISCOVERED_H
 #define _DISCOVERED_H
 
+#ifndef _WIN32
 #include <netinet/in.h>
+#endif
 #ifdef SOAPYSDR
   #include <glib.h>
   #include <SoapySDR/Device.h>

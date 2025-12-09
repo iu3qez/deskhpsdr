@@ -1,0 +1,62 @@
+# Compiling deskHPSDR on Windows (MSYS2)
+
+These instructions guide you through compiling deskHPSDR on Windows using the MSYS2 environment (MinGW64 subsystem).
+
+## Prerequisites
+
+1.  **Install MSYS2**: Download and install from [msys2.org](https://www.msys2.org/).
+2.  **Open MinGW64 Terminal**: Open the `MSYS2 MinGW 64-bit` terminal (do not use the standard MSYS terminal).
+
+## Install Dependencies
+
+Run the following command to install the necessary libraries and tools:
+
+```bash
+pacman -S mingw-w64-x86_64-gcc \
+          mingw-w64-x86_64-cmake \
+          mingw-w64-x86_64-make \
+          mingw-w64-x86_64-gtk3 \
+          mingw-w64-x86_64-fftw \
+          mingw-w64-x86_64-portaudio \
+          mingw-w64-x86_64-openssl \
+          mingw-w64-x86_64-curl \
+          mingw-w64-x86_64-libxml2 \
+          mingw-w64-x86_64-json-c
+```
+
+## Compilation
+
+1.  Navigate to the source code directory (where you cloned this repository):
+    ```bash
+    cd /path/to/deskhpsdr
+    ```
+
+2.  Create a build directory and enter it:
+    ```bash
+    mkdir build
+    cd build
+    ```
+
+3.  Configure the build with CMake:
+    ```bash
+    cmake -G "MinGW Makefiles" ..
+    ```
+    *Note: If you encounter an error about `libpulse`, ensure that the build system is correctly detecting Windows and reverting to PortAudio. The provided CMakeLists.txt should handle this automatically.*
+
+4.  Compile the application:
+    ```bash
+    mingw32-make
+    ```
+
+## Running
+
+If the compilation is successful, you will find `deskhpsdr.exe` in the `build` directory. You can run it directly from the terminal:
+
+```bash
+./deskhpsdr.exe
+```
+
+## Troubleshooting
+
+-   **DLL Errors**: If running the executable fails due to missing DLLs, ensure you are running it from the MSYS2 MinGW64 terminal, which has the library paths set up correctly.
+-   **Audio**: This build uses PortAudio. Ensure your default Windows recording and playback devices are set correctly.

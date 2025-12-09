@@ -23,7 +23,11 @@
 #include <gdk/gdk.h>
 #include <string.h>
 #include <stdlib.h>
+#ifndef _WIN32
 #include <unistd.h>
+#else
+#include <io.h>
+#endif
 #include <math.h>
 
 #include "appearance.h"

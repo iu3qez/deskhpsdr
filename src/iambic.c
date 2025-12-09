@@ -178,7 +178,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#ifndef _WIN32
 #include <unistd.h>
+#else
+#include <io.h>
+#endif
 #include <stdint.h>
 #include <fcntl.h>
 #include <poll.h>

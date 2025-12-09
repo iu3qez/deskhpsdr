@@ -21,13 +21,19 @@
 
 #ifdef GPIO
 #include <string.h>
+#ifndef _WIN32
 #include <unistd.h>
+#else
+#include <io.h>
+#endif
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <linux/i2c-dev.h>
 #include <i2c/smbus.h>
+#ifndef _WIN32
 #include <sys/ioctl.h>
+#endif
 #include <fcntl.h>
 
 #include <gtk/gtk.h>

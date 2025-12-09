@@ -51,8 +51,15 @@
 #include <string.h>
 #include <stdio.h>
 #include <fcntl.h>
-#include <sys/socket.h>
+#ifdef _WIN32
+  #include <winsock2.h>
+  #include <ws2tcpip.h>
+#else
+  #include <sys/socket.h>
+#endif
+#ifndef _WIN32
 #include <netinet/in.h>
+#endif
 
 int main() {
   int optval;

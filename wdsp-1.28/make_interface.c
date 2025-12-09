@@ -24,6 +24,15 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <stdio.h>
+/* ssize_t is already defined in MinGW64 stdlib.h/corecrt.h */
+ssize_t getline(char **lineptr, size_t *n, FILE *stream) {
+    if (fgets(*lineptr, (int)*n, stream) == NULL) return -1;
+    return (ssize_t)strlen(*lineptr);
+}
+#endif
+
 void trimm(char *line, size_t maxlen);
 
 int main(int argc, char **argv) {

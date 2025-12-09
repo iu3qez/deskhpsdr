@@ -27,14 +27,32 @@
 #include <stdint.h>
 #include <string.h>
 #include <errno.h>
+#ifndef _WIN32
 #include <arpa/inet.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#endif
+#ifdef _WIN32
+  #include <winsock2.h>
+  #include <ws2tcpip.h>
+#else
+  #include <sys/socket.h>
+#endif
+#ifndef _WIN32
+  #include <unistd.h>
+#else
+  #include <io.h>
+#endif
 #include <ifaddrs.h>
+#ifndef _WIN32
 #include <net/if.h>
+#endif
 #ifndef __APPLE__
   #include <sys/time.h>     // struct timeval
-  #include <sys/socket.h>   // setsockopt, SOL_SOCKET
+#ifdef _WIN32
+  #include <winsock2.h>
+  #include <ws2tcpip.h>
+#else
+  #include <sys/socket.h>
+#endif   // setsockopt, SOL_SOCKET
 #endif
 
 static void mac(const uint8_t *m) { printf("%02X:%02X:%02X:%02X:%02X:%02X", m[0], m[1], m[2], m[3], m[4], m[5]); }

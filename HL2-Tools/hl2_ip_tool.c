@@ -24,19 +24,32 @@
 #ifndef _DEFAULT_SOURCE
   #define _DEFAULT_SOURCE
 #endif
+#ifndef _WIN32
 #include <arpa/inet.h>
+#endif
 #include <errno.h>
 #include <getopt.h>
+#ifndef _WIN32
 #include <netinet/in.h>
+#endif
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/select.h>
-#include <sys/socket.h>
+#ifdef _WIN32
+  #include <winsock2.h>
+  #include <ws2tcpip.h>
+#else
+  #include <sys/socket.h>
+#endif
 #include <sys/time.h>
+#ifndef _WIN32
 #include <unistd.h>
+#else
+#include <io.h>
+#endif
 
 #define PORT_CMD   1025
 #define HL2_ADDR   0x3D

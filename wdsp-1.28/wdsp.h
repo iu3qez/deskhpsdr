@@ -65,8 +65,10 @@ enum txaMeterType {
 //
 // Take care of some "Windows specialities"
 //
+#ifndef _WIN32
 #define __stdcall
 #define LPCRITICAL_SECTION void*
+#endif
 
 //
 // To make the interface simpler, use "void *" for

@@ -26,10 +26,21 @@
 
 
 #include <stdio.h>
+#ifndef _WIN32
 #include <unistd.h>
+#else
+#include <io.h>
+#endif
 #include <string.h>
-#include <sys/socket.h>
+#ifdef _WIN32
+  #include <winsock2.h>
+  #include <ws2tcpip.h>
+#else
+  #include <sys/socket.h>
+#endif
+#ifndef _WIN32
 #include <netinet/in.h>
+#endif
 
 //
 // tts_send: send broadcast UDP packet containing a string

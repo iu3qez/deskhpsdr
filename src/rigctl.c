@@ -76,7 +76,12 @@
 
 #include <math.h>
 
-#include <sys/socket.h>
+#ifdef _WIN32
+  #include <winsock2.h>
+  #include <ws2tcpip.h>
+#else
+  #include <sys/socket.h>
+#endif
 #include <arpa/inet.h> //inet_addr
 #include <netinet/tcp.h>
 

@@ -77,19 +77,32 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#ifndef _WIN32
 #include <unistd.h>
+#else
+#include <io.h>
+#endif
 #include <pcap.h>
 #include <errno.h>
-#include <sys/socket.h>
+#ifdef _WIN32
+  #include <winsock2.h>
+  #include <ws2tcpip.h>
+#else
+  #include <sys/socket.h>
+#endif
+#ifndef _WIN32
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#endif
 #include <netinet/if_ether.h>
 #include <fcntl.h>
 #ifdef __APPLE__
   #include <net/if_dl.h>
 #else
+#ifndef _WIN32
   #include <sys/ioctl.h>
   #include <net/if.h>
+#endif
 #endif
 #include <string.h>
 
