@@ -72,11 +72,47 @@
 
     // Macro for setsockopt casting
     #define setsockopt(s, level, optname, optval, optlen) setsockopt(s, level, optname, (const char *)(optval), optlen)
+    
+    // Macro for getsockopt casting
+    #define getsockopt(s, level, optname, optval, optlen) getsockopt(s, level, optname, (char *)(optval), optlen)
 
     // Shim for inet_aton
     // inet_aton returns non-zero if valid, 0 if invalid
     // inet_pton returns 1 if valid, 0 if invalid (or -1 on error)
     #define inet_aton(cp, addr) (inet_pton(AF_INET, cp, addr) == 1)
+
+    // gettimeofday shim
+    int gettimeofday(struct timeval *tp, void *tzp);
+
+    // Set socket non-blocking mode
+    void set_nonblocking(SOCKET sock, int enable);
+
+    #ifndef min
+    #define min(x,y) ((x)<(y)?(x):(y))
+    #endif
+
+    #ifndef SO_REUSEPORT
+    #define SO_REUSEPORT SO_REUSEADDR
+    #endif
+
+    // Map bzero to memset
+    #define bzero(b,len) (memset((b), '\0', (len)), (void) 0)
+
+    // Shim for realpath
+    #define realpath(N,R) _fullpath((R),(N),_MAX_PATH)
+
+    // Shim for sync
+    #define sync() _flushall()
+
+    // Baud rate constants
+    #define B4800   4800
+    #define B9600   9600
+    #define B19200  19200
+    #define B38400  38400
+
+    #ifndef SOL_TCP
+    #define SOL_TCP IPPROTO_TCP
+    #endif
 #else
     // POSIX systems
     #include <sys/socket.h>
@@ -91,6 +127,17 @@
     
     #define windows_socket_init()
     #define windows_socket_cleanup()
+
+    // Abstract fcntl usage for non-blocking
+    static inline void set_nonblocking(int sock, int enable) {
+        int flags = fcntl(sock, F_GETFL, 0);
+        if (flags == -1) return;
+        if (enable) {
+            fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+        } else {
+            fcntl(sock, F_SETFL, flags & ~O_NONBLOCK);
+        }
+    }
 #endif
 
 #endif // WINDOWS_COMPAT_H

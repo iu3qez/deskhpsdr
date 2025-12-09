@@ -622,7 +622,7 @@ static int file_exists (const char * fileName) {
   return ( i == 0 ) ? 1 : 0 ;
 }
 
-#if defined(__linux__) || defined(__APPLE__)
+#if defined(__linux__) || defined(__APPLE__) || defined(_WIN32)
 //
 // The purpose of this function is to look for the file sIn in various
 // directories, and if found, return the name in *sOut with maximum
@@ -656,7 +656,11 @@ static void filePath (char *sOut, const char *sIn, size_t len) {
   if (file_exists(sOut)) { return; }
 
   char xPath [PATH_MAX] = {0};
+#ifdef _WIN32
+  rc = GetModuleFileName(NULL, xPath, sizeof(xPath));
+#else
   rc = readlink ("/proc/self/exe", xPath, sizeof(xPath));
+#endif
 
   // try to detect the directory from which the executable has been loaded
   if (rc >= 0) {

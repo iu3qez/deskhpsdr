@@ -24,10 +24,14 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#ifndef _WIN32
 #include <termios.h>
+#endif
 #include <unistd.h>
 
+
 #include "new_menu.h"
+#include "windows_compat.h"
 #include "rigctl_menu.h"
 #include "rigctl.h"
 #include "band.h"

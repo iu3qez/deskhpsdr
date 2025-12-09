@@ -94,6 +94,20 @@ CURRDIR := $(shell pwd)
 UNAME_R := $(shell uname -r | sed 's/\..*//')
 ARCH := $(shell uname -m)
 
+# Check for Windows/MinGW/MSYS and error out if detected
+ifneq (,$(findstring MINGW,$(UNAME_S)))
+$(error This Makefile is not for Windows. Please use CMake instead: mkdir build && cd build && cmake -G "MSYS Makefiles" .. && mingw32-make)
+endif
+ifneq (,$(findstring MSYS,$(UNAME_S)))
+$(error This Makefile is not for Windows. Please use CMake instead: mkdir build && cd build && cmake -G "MSYS Makefiles" .. && mingw32-make)
+endif
+ifneq (,$(findstring CYGWIN,$(UNAME_S)))
+$(error This Makefile is not for Windows. Please use CMake instead: mkdir build && cd build && cmake -G "MSYS Makefiles" .. && mingw32-make)
+endif
+ifeq ($(OS),Windows_NT)
+$(error This Makefile is not for Windows. Please use CMake instead: mkdir build && cd build && cmake -G "MSYS Makefiles" .. && mingw32-make)
+endif
+
 PKG_CONFIG = pkg-config
 
 ifeq ($(UNAME_S), Linux)

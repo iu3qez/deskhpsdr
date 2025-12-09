@@ -29,15 +29,19 @@
 #include <gdk/gdk.h>
 #include <fcntl.h>
 #include <string.h>
+#ifndef _WIN32
 #include <termios.h>
+#endif
 #include <unistd.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#ifndef _WIN32
 #include <sys/ioctl.h>
 #include <spawn.h>
 #include <signal.h>
 #include <sys/wait.h>
+#endif
 #include <libgen.h>
 #ifdef __APPLE__
   #include <mach-o/dyld.h>   // Für _NSGetExecutablePath
@@ -734,6 +738,7 @@ static void *lpf_udp_listener(void *arg) {
 }
 
 static pid_t get_pid_by_name(const char* process_name) {
+#ifndef _WIN32
   char command[256];
   // -n = neueste (letzte gestartete) Instanz
   // snprintf(command, sizeof(command), "pgrep -n %s", process_name);
@@ -747,6 +752,10 @@ static pid_t get_pid_by_name(const char* process_name) {
   fscanf(fp, "%d", &pid);  // Lies die erste Zeile (PID)
   pclose(fp);
   return pid;
+#else
+  // TODO: FIXME: Implement get_pid_by_name for Windows
+  return 0;
+#endif
 }
 
 static char* find_in_path(const char* binary_name) {
@@ -818,6 +827,7 @@ static char* mac_get_rigctld_path() {
 #endif
 
 static void start_rigctld() {
+#ifndef _WIN32
   char rigctld_target_port[16];
   snprintf(rigctld_target_port, sizeof(rigctld_target_port), ":%u", rigctl_tcp_port);
   t_print("%s: rigctld_target_port is %s\n", __FUNCTION__, rigctld_target_port);
@@ -834,12 +844,29 @@ static void start_rigctld() {
 
 #ifdef __APPLE__
   // Get rigctld path using helper function
-  char *rigctld_path = mac_get_rigctld_path();
+  if (mac_get_rigctld_path() == NULL) {
+    t_perror("Fehler beim Ermitteln des rigctld_deskhpsdr-Pfads\n");
+    return;
+  }
+
 #else
-  char *rigctld_path = find_in_path("rigctld_deskhpsdr");
+  // Linux
+  char* path = find_in_path("rigctld_deskhpsdr");
+
+  if (path) {
+    strncpy(rigctld_path, path, sizeof(rigctld_path) - 1);
+    free(path);
+  } else {
+    // rigctld_enabled = 0;
+    // t_perror("rigctld_deskhpsdr nicht gefunden\n");
+    // return;
+    // Fallback auf relatives Verzeichnis (optional, falls gewünscht)
+    snprintf(rigctld_path, sizeof(rigctld_path), "./rigctld_deskhpsdr");
+  }
+
 #endif
 
-  if (!rigctld_path || access(rigctld_path, X_OK) != 0) {
+  if (access(rigctld_path, X_OK) != 0) {
     rigctld_enabled = 0;
     t_perror("rigctld_deskhpsdr nicht gefunden oder nicht ausführbar\n");
     return;
@@ -863,16 +890,21 @@ static void start_rigctld() {
     rigctld_enabled = 0;
     t_perror("posix_spawn fehlgeschlagen\n");
   }
+#else
+  t_print("rigctld not supported on Windows yet\n");
+#endif
 }
 
 // Funktion zum Stoppen von rigctld
 void stop_rigctld() {
+#ifndef _WIN32
   if (rigctld_pid == 0) { return; }  // Läuft nicht
 
   t_print("%s:Stoppe rigctld (PID %d)...\n", __FUNCTION__, rigctld_pid);
   kill(rigctld_pid, SIGTERM);  // Oder SIGKILL bei Bedarf
   waitpid(rigctld_pid, NULL, 0);  // Warten bis beendet
   rigctld_pid = 0;
+#endif
 }
 
 static void* rigctld_control_thread(void* arg) {
@@ -7075,6 +7107,7 @@ int parse_cmd(void *data) {
 
 // Serial Port Launch
 int set_interface_attribs (int fd, int speed, int parity) {
+#ifndef _WIN32
   struct termios tty;
   memset (&tty, 0, sizeof tty);
 
@@ -7109,9 +7142,13 @@ int set_interface_attribs (int fd, int speed, int parity) {
   }
 
   return 0;
+#else
+  return -1;
+#endif
 }
 
 void set_blocking (int fd, int should_block) {
+#ifndef _WIN32
   struct termios tty;
   memset (&tty, 0, sizeof tty);
   int flags = fcntl(fd, F_GETFL, 0);
@@ -7135,6 +7172,7 @@ void set_blocking (int fd, int should_block) {
   if (tcsetattr (fd, TCSANOW, &tty) != 0) {
     t_perror("RIGCTL (tcsetattr):");
   }
+#endif
 }
 
 static gpointer serial_server(gpointer data) {

@@ -44,7 +44,9 @@
 #include <fcntl.h>
 #include <math.h>
 #include <pthread.h>
+#ifndef _WIN32
 #include <termios.h>
+#endif
 #include "windows_compat.h"
 #include <sys/time.h>
 #include <semaphore.h>
