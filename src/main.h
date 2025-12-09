@@ -23,6 +23,7 @@
 #define _MAIN_H
 
 #include "windows_compat.h"
+#include <pthread.h>
 extern struct utsname unameData;
 
 enum _controller_enum {

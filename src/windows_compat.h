@@ -11,6 +11,10 @@
     #include <io.h>
     #include <process.h>
 
+    // Undefine macros from windows.h/wingdi.h that conflict with application enums
+    #undef RELATIVE
+    #undef ABSOLUTE
+
     // Struct utsname for uname()
     struct utsname {
         char sysname[65];
