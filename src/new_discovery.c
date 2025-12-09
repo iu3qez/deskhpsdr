@@ -26,8 +26,8 @@
 #include "windows_compat.h"
 #ifndef _WIN32
 #include <net/if_arp.h>
-#include <ifaddrs.h>
 #endif
+#include <ifaddrs.h>
 #include <string.h>
 #include <errno.h>
 
@@ -77,6 +77,18 @@ void new_discovery() {
     // of them are very unlikely to offer a radio connection.
     // These are skipped.
     //
+#ifdef _WIN32
+        // Dummy flags for Windows partial implementation if not defined
+        #ifndef IFF_UP
+        #define IFF_UP 0x1
+        #endif
+        #ifndef IFF_RUNNING
+        #define IFF_RUNNING 0x40
+        #endif
+        #ifndef IFF_LOOPBACK
+        #define IFF_LOOPBACK 0x8
+        #endif
+#endif
     if (ifa->ifa_addr) {
       if (
         ifa->ifa_addr->sa_family == AF_INET
