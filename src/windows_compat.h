@@ -14,6 +14,7 @@
     // Undefine macros from windows.h/wingdi.h that conflict with application enums
     #undef RELATIVE
     #undef ABSOLUTE
+    #undef SNB
 
     // Struct utsname for uname()
     struct utsname {
@@ -37,6 +38,7 @@
     #include <sys/ioctl.h>
     #include <net/if.h>
     #include <sys/utsname.h>
+    #include <fcntl.h>
     
     #define windows_socket_init()
     #define windows_socket_cleanup()

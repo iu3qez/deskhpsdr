@@ -28,7 +28,7 @@
 #include "windows_compat.h"
 #include <errno.h>
 #include <sys/types.h>
-#include <fcntl.h>
+
 
 #include <libtelnet.h>
 #include "dxcluster.h"
@@ -390,11 +390,16 @@ dxcluster_connect_tcp(const char *host, const char *port) {
     return -1;
   }
 
+#ifdef _WIN32
+  u_long mode = 1;
+  ioctlsocket(sock, FIONBIO, &mode);
+#else
   int flags = fcntl(sock, F_GETFL, 0);
 
   if (flags != -1) {
     fcntl(sock, F_SETFL, flags | O_NONBLOCK);
   }
+#endif
 
   return sock;
 }
