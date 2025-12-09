@@ -28,7 +28,9 @@
 #else
 #include <io.h>
 #endif
+#ifndef _WIN32
 #include <termios.h>
+#endif
 
 #include "main.h"
 #include "discovered.h"
