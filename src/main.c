@@ -26,11 +26,18 @@
 #include <stdlib.h>
 #include <string.h>
 #include <semaphore.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <sys/resource.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
+
+#ifdef _WIN32
+  #include <winsock2.h>
+  #include <windows.h>
+#else
+  #include <sys/socket.h>
+  #include <sys/types.h>
+  #include <sys/resource.h>
+  #include <netinet/in.h>
+  #include <arpa/inet.h>
+#endif
+
 #include <curl/curl.h>
 #include <pthread.h>
 
@@ -696,6 +703,15 @@ static GdkPixbuf *create_pixbuf_from_data() {
 static int init(void *data) {
   char wisdom_directory[1025];
   char text[1024];
+
+#ifdef _WIN32
+  WSADATA wsaData;
+  if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+      g_printerr("WSAStartup failed.\n");
+      return 1;
+  }
+#endif
+
   t_print("%s\n", __FUNCTION__);
   t_print("LC_ALL=%s\n", setlocale(LC_ALL, NULL));
   t_print("LC_NUMERIC=%s\n", setlocale(LC_NUMERIC, NULL));
