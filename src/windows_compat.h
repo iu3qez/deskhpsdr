@@ -72,6 +72,11 @@
 
     // Macro for setsockopt casting
     #define setsockopt(s, level, optname, optval, optlen) setsockopt(s, level, optname, (const char *)(optval), optlen)
+
+    // Shim for inet_aton
+    // inet_aton returns non-zero if valid, 0 if invalid
+    // inet_pton returns 1 if valid, 0 if invalid (or -1 on error)
+    #define inet_aton(cp, addr) (inet_pton(AF_INET, cp, addr) == 1)
 #else
     // POSIX systems
     #include <sys/socket.h>

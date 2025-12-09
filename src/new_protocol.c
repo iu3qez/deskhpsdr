@@ -29,11 +29,11 @@
 #ifndef _WIN32
 #include <net/if_arp.h>
 #include <netinet/ip.h>
-#endif
 #include <ifaddrs.h>
+#include <sys/select.h>
+#endif
 #include <semaphore.h>
 #include <math.h>
-#include <sys/select.h>
 #include <signal.h>
 
 #include "main.h"
