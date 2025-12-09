@@ -87,6 +87,16 @@ add_subdirectory(libtelnet)
 # Source files
 file(GLOB SOURCES "src/*.c")
 
+# Exclude standalone tools/simulators from the main application build
+list(REMOVE_ITEM SOURCES 
+    "${CMAKE_SOURCE_DIR}/src/bootloader.c"
+    "${CMAKE_SOURCE_DIR}/src/bootldrsim.c"
+    "${CMAKE_SOURCE_DIR}/src/hpsdrsim.c"
+    "${CMAKE_SOURCE_DIR}/src/newhpsdrsim.c"
+    "${CMAKE_SOURCE_DIR}/src/udplistener.c"
+    "${CMAKE_SOURCE_DIR}/src/udpsender.c"
+)
+
 # MIDI sources
 if(WIN32)
     # No MIDI support for Windows yet? Or use portmidi? 
