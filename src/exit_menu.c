@@ -23,9 +23,9 @@
 #include <semaphore.h>
 #include <stdio.h>
 #include <string.h>
-#include <curl/curl.h>
 
 #include "main.h"
+#include <curl/curl.h>
 #include "new_menu.h"
 #include "exit_menu.h"
 #include "discovery.h"
