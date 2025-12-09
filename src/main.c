@@ -723,6 +723,15 @@ static int init(void *data) {
   }
 #endif
 
+
+#ifdef _WIN32
+  WSADATA wsaData;
+  if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+      g_printerr("WSAStartup failed.\n");
+      return 1;
+  }
+#endif
+
   t_print("%s\n", __FUNCTION__);
   t_print("LC_ALL=%s\n", setlocale(LC_ALL, NULL));
   t_print("LC_NUMERIC=%s\n", setlocale(LC_NUMERIC, NULL));
