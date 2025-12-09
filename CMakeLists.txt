@@ -95,6 +95,7 @@ list(REMOVE_ITEM SOURCES
     "${CMAKE_SOURCE_DIR}/src/newhpsdrsim.c"
     "${CMAKE_SOURCE_DIR}/src/udplistener.c"
     "${CMAKE_SOURCE_DIR}/src/udpsender.c"
+    "${CMAKE_SOURCE_DIR}/src/gpio.c"
 )
 
 # MIDI sources
