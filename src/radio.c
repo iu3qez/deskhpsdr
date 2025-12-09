@@ -28,7 +28,9 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include "windows_compat.h"
+#ifndef _WIN32
 #include <termios.h>
+#endif
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -100,8 +102,12 @@
 
 #include "macos_webview.h"
 
+#ifndef min
 #define min(x,y) (x<y?x:y)
+#endif
+#ifndef max
 #define max(x,y) (x<y?y:x)
+#endif
 
 int MENU_HEIGHT = 30;             // always set to VFO_HEIGHT/2
 int MENU_WIDTH = 65;              // nowhere changed
@@ -393,6 +399,7 @@ int rx_height;
 const int tx_dialog_width = 240;
 const int tx_dialog_height = 400;
 
+#ifndef _WIN32
 typedef struct {
   char *port;
   int baud;
@@ -406,6 +413,7 @@ static SaturnSerialPort SaturnSerialPortsList[] = {
   {"/dev/ttyS7", B115200},
   {NULL, 0}
 };
+#endif
 
 #if defined (__AUTOG__)
 static gboolean launch_autogain_hl2_wrapper(gpointer data) {
@@ -1605,6 +1613,7 @@ void radio_start_radio() {
   //
   // Note any serial setting set by this mechanism now is read-only
   //
+#ifndef _WIN32
   if (have_saturn_xdma) {
     for (SaturnSerialPort *ChkSerial = SaturnSerialPortsList; ChkSerial->port != NULL; ChkSerial++) {
       char *cp = realpath(ChkSerial->port, NULL);
@@ -1623,6 +1632,7 @@ void radio_start_radio() {
       }
     }
   }
+#endif
 
   if (device == DEVICE_METIS || device == DEVICE_OZY || device == NEW_DEVICE_ATLAS) {
     //
@@ -3306,9 +3316,11 @@ static void radio_restore_state() {
       GetPropI1("rigctl_serial_baud_rate[%i]", id,             SerialPorts[id].baud);
       GetPropI1("rigctl_serial_autoreporting[%d]", id,         SerialPorts[id].autoreporting);
 
+#ifndef _WIN32
       if (SerialPorts[id].andromeda) {
         SerialPorts[id].baud = B9600;
       }
+#endif
     }
   }
 

@@ -1,6 +1,7 @@
 #include "windows_compat.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #ifdef _WIN32
 int uname(struct utsname *n) {
@@ -152,5 +153,30 @@ error_cleanup:
     if (adapter_addresses) free(adapter_addresses);
     freeifaddrs(ifa_head);
     return -1;
+}
+
+int gettimeofday(struct timeval *tp, void *tzp) {
+    if (tp) {
+        FILETIME file_time;
+        ULARGE_INTEGER ularge;
+
+        GetSystemTimeAsFileTime(&file_time);
+        ularge.LowPart = file_time.dwLowDateTime;
+        ularge.HighPart = file_time.dwHighDateTime;
+
+        // FileTime is in 100ns units since Jan 1 1601
+        // Unix time is in 1s units since Jan 1 1970
+        // ID: 116444736000000000 is the offset in 100ns units
+        ularge.QuadPart -= 116444736000000000ULL;
+
+        tp->tv_sec = (long)(ularge.QuadPart / 10000000ULL);
+        tp->tv_usec = (long)((ularge.QuadPart % 10000000ULL) / 10ULL);
+    }
+    return 0;
+}
+
+void set_nonblocking(SOCKET sock, int enable) {
+    u_long mode = enable ? 1 : 0;
+    ioctlsocket(sock, FIONBIO, &mode);
 }
 #endif

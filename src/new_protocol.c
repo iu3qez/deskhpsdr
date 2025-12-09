@@ -69,6 +69,7 @@
   int  rxiq_count = 0;
 #endif
 
+#ifndef min
 #define min(x,y) (x<y?x:y)
 
 #define PI 3.1415926535897932F

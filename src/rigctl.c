@@ -29,15 +29,19 @@
 #include <gdk/gdk.h>
 #include <fcntl.h>
 #include <string.h>
+#ifndef _WIN32
 #include <termios.h>
+#endif
 #include <unistd.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#ifndef _WIN32
 #include <sys/ioctl.h>
 #include <spawn.h>
 #include <signal.h>
 #include <sys/wait.h>
+#endif
 #include <libgen.h>
 #ifdef __APPLE__
   #include <mach-o/dyld.h>   // Für _NSGetExecutablePath
@@ -130,7 +134,9 @@ static pthread_mutex_t lpf_array_mutex = PTHREAD_MUTEX_INITIALIZER; // Mutex fü
 static pthread_t rigctld_thread;
 static pthread_mutex_t rigctld_mutex = PTHREAD_MUTEX_INITIALIZER; // Mutex für Threadsicherheit
 static pid_t rigctld_pid = 0;
+#ifndef _WIN32
 extern char **environ;  // wird von posix_spawnp benötigt
+#endif
 
 static int tcp_running = 0;
 static char rigctld_path[PATH_MAX];
@@ -199,6 +205,7 @@ int rigctl_tcp_running() {
 
 // Funktion zum Abrufen des CTS-Status der seriellen PTT
 static gboolean get_serptt_cts(int fd) {
+#ifndef _WIN32
   int status;
 
   // Holen des CTS-Status von einem seriellen Gerät
@@ -209,6 +216,9 @@ static gboolean get_serptt_cts(int fd) {
 
   // Überprüft, ob der CTS-Pin gesetzt ist
   return (status & TIOCM_CTS) != 0 ? TRUE : FALSE;
+#else
+  return FALSE;
+#endif
 }
 
 // Funktion zur Aktualisierung des CTS-Status der seriellen PTT
@@ -272,6 +282,7 @@ static gpointer monitor_serptt_cts_thread(gpointer user_data) {
 }
 
 static gpointer monitor_sertune_thread(gpointer user_data) {
+#ifndef _WIN32
   int fd = *(int *)user_data;
   int status;
 
@@ -323,11 +334,12 @@ static gpointer monitor_sertune_thread(gpointer user_data) {
 
     g_usleep(10000); // delay 10 ms
   }
-
+#endif
   return NULL;
 }
 
 void launch_serptt() {
+#ifndef _WIN32
   if (SerialPorts[MAX_SERIAL + 1].enable) {
     serptt_fd = open(SerialPorts[MAX_SERIAL + 1].port, O_RDWR | O_NOCTTY | O_SYNC | O_NONBLOCK);
 
@@ -346,9 +358,13 @@ void launch_serptt() {
       t_print("---- Shutdown SerPTT Thread at %s ----\n", SerialPorts[MAX_SERIAL + 1].port);
     }
   }
+#else
+  t_print("Serial PTT not supported on Windows yet\n");
+#endif
 }
 
 void launch_sertune() {
+#ifndef _WIN32
   int status_sertune;
 
   if (SerialPorts[MAX_SERIAL].enable) {
@@ -373,6 +389,9 @@ void launch_sertune() {
       t_print("---- Shutdown serTUNE control Thread at %s ----\n", SerialPorts[MAX_SERIAL].port);
     }
   }
+#else
+  t_print("Serial TUNE not supported on Windows yet\n");
+#endif
 }
 
 #if defined (__AUTOG__)
@@ -733,7 +752,10 @@ static void *lpf_udp_listener(void *arg) {
   pthread_exit(NULL);
 }
 
+
+// FIXME: Implement this function for Windows
 static pid_t get_pid_by_name(const char* process_name) {
+#ifndef _WIN32
   char command[256];
   // -n = neueste (letzte gestartete) Instanz
   // snprintf(command, sizeof(command), "pgrep -n %s", process_name);
@@ -747,6 +769,10 @@ static pid_t get_pid_by_name(const char* process_name) {
   fscanf(fp, "%d", &pid);  // Lies die erste Zeile (PID)
   pclose(fp);
   return pid;
+#else
+  // TODO: FIXME: Implement get_pid_by_name for Windows
+  return 0;
+#endif
 }
 
 static char* find_in_path(const char* binary_name) {
@@ -818,6 +844,7 @@ static char* mac_get_rigctld_path() {
 #endif
 
 static void start_rigctld() {
+#ifndef _WIN32
   char rigctld_target_port[16];
   snprintf(rigctld_target_port, sizeof(rigctld_target_port), ":%u", rigctl_tcp_port);
   t_print("%s: rigctld_target_port is %s\n", __FUNCTION__, rigctld_target_port);
@@ -834,12 +861,29 @@ static void start_rigctld() {
 
 #ifdef __APPLE__
   // Get rigctld path using helper function
-  char *rigctld_path = mac_get_rigctld_path();
+  if (mac_get_rigctld_path() == NULL) {
+    t_perror("Fehler beim Ermitteln des rigctld_deskhpsdr-Pfads\n");
+    return;
+  }
+
 #else
-  char *rigctld_path = find_in_path("rigctld_deskhpsdr");
+  // Linux
+  char* path = find_in_path("rigctld_deskhpsdr");
+
+  if (path) {
+    strncpy(rigctld_path, path, sizeof(rigctld_path) - 1);
+    free(path);
+  } else {
+    // rigctld_enabled = 0;
+    // t_perror("rigctld_deskhpsdr nicht gefunden\n");
+    // return;
+    // Fallback auf relatives Verzeichnis (optional, falls gewünscht)
+    snprintf(rigctld_path, sizeof(rigctld_path), "./rigctld_deskhpsdr");
+  }
+
 #endif
 
-  if (!rigctld_path || access(rigctld_path, X_OK) != 0) {
+  if (access(rigctld_path, X_OK) != 0) {
     rigctld_enabled = 0;
     t_perror("rigctld_deskhpsdr nicht gefunden oder nicht ausführbar\n");
     return;
@@ -863,16 +907,21 @@ static void start_rigctld() {
     rigctld_enabled = 0;
     t_perror("posix_spawn fehlgeschlagen\n");
   }
+#else
+  t_print("rigctld not supported on Windows yet\n");
+#endif
 }
 
 // Funktion zum Stoppen von rigctld
 void stop_rigctld() {
+#ifndef _WIN32
   if (rigctld_pid == 0) { return; }  // Läuft nicht
 
   t_print("%s:Stoppe rigctld (PID %d)...\n", __FUNCTION__, rigctld_pid);
   kill(rigctld_pid, SIGTERM);  // Oder SIGKILL bei Bedarf
   waitpid(rigctld_pid, NULL, 0);  // Warten bis beendet
   rigctld_pid = 0;
+#endif
 }
 
 static void* rigctld_control_thread(void* arg) {
@@ -7075,6 +7124,7 @@ int parse_cmd(void *data) {
 
 // Serial Port Launch
 int set_interface_attribs (int fd, int speed, int parity) {
+#ifndef _WIN32
   struct termios tty;
   memset (&tty, 0, sizeof tty);
 
@@ -7109,9 +7159,13 @@ int set_interface_attribs (int fd, int speed, int parity) {
   }
 
   return 0;
+#else
+  return -1;
+#endif
 }
 
 void set_blocking (int fd, int should_block) {
+#ifndef _WIN32
   struct termios tty;
   memset (&tty, 0, sizeof tty);
   int flags = fcntl(fd, F_GETFL, 0);
@@ -7135,6 +7189,7 @@ void set_blocking (int fd, int should_block) {
   if (tcsetattr (fd, TCSANOW, &tty) != 0) {
     t_perror("RIGCTL (tcsetattr):");
   }
+#endif
 }
 
 static gpointer serial_server(gpointer data) {
@@ -7247,6 +7302,7 @@ static gpointer serial_server(gpointer data) {
 }
 
 int launch_serial_rigctl (int id) {
+#ifndef _WIN32
   int fd;
   int baud;
   t_print("%s:  Port %s\n", __FUNCTION__, SerialPorts[id].port);
@@ -7269,23 +7325,27 @@ int launch_serial_rigctl (int id) {
   //
   // ANDROMEDA uses a hard-wired baud rate 9600
   //
-  if (SerialPorts[id].andromeda && !SerialPorts[id].g2) {
+  if (SerialPorts[id].andromeda) {
     baud = B9600;
   }
 
   t_print("%s: Baud rate=%d\n", __FUNCTION__, baud);
   serial_client[id].fifo = 0;
 
-  if (set_interface_attribs (fd, baud, 0) == 0) {
-    set_blocking (fd, 1);                   // set blocking
-  } else {
+  set_interface_attribs (fd, baud, 0);     // set speed to 115,200 bps, 8n1 (no parity)
+  set_blocking (fd, 0);                    // set no blocking
+
+  //
+  // If this is a serial line to an ANDROMEDA controller, initialize it and start a periodic GTK task
+  //
+  if (SerialPorts[id].andromeda) {
     //
-    // This tells the server that fd is something else
-    // than a serial line (most likely a FIFO), but it
-    // can still be used.
+    // For Arduino UNO and the like, opening the serial line executes a hardware
+    // reset and then the device stays in bootloader mode for half a second or so.
     //
-    t_print("%s: serial port is probably a FIFO\n", __FUNCTION__);
-    serial_client[id].fifo = 1;
+    usleep(700000L);
+    // Note this will send a ZZZS; command upon first invocation
+    serial_client[id].andromeda_timer = g_timeout_add(500, andromeda_handler, &serial_client[id]);
   }
 
   //

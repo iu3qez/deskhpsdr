@@ -28,8 +28,8 @@
 #ifndef _WIN32
 #include <net/if_arp.h>
 #include <netinet/ip.h>
-#endif
 #include <ifaddrs.h>
+#endif
 #include <semaphore.h>
 #include <string.h>
 #include <errno.h>
@@ -55,7 +55,9 @@
   #include "toolset.h"
 #endif
 
+#ifndef min
 #define min(x,y) (x<y?x:y)
+#endif
 
 #define SYNC0 0
 #define SYNC1 1
@@ -1021,12 +1023,9 @@ static void open_tcp_socket() {
   }
 
   if (setsockopt(tmp, SOL_SOCKET, SO_REUSEPORT, &optval, optlen) < 0) {
-    t_perror("tcp_socket: SO_REUSEPORT");
-    close(tmp);
-    tcp_socket = -1;
-    return;
+    perror("setsockopt SO_REUSEPORT");
+    exit(1);
   }
-
   if (connect(tmp, (const struct sockaddr *)&data_addr, sizeof(data_addr)) < 0) {
     t_perror("tcp_socket: connect");
     close(tmp);

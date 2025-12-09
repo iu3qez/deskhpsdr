@@ -26,12 +26,9 @@
 #include "windows_compat.h"
 #ifndef _WIN32
 #include <net/if_arp.h>
-#endif
 #include <ifaddrs.h>
-#include <string.h>
-#include <errno.h>
-#include <fcntl.h>
 #include <sys/select.h>
+#endif
 
 #ifdef __linux__
   #include <unistd.h>
@@ -223,8 +220,7 @@ static void discover(struct ifaddrs* iface, int discflag) {
     // - Do not forget to make the socket blocking again.
     //
     // Step 1. Make socket non-blocking and connect()
-    flags = fcntl(discovery_socket, F_GETFL, 0);
-    fcntl(discovery_socket, F_SETFL, flags | O_NONBLOCK);
+    set_nonblocking(discovery_socket, 1);
     rc = connect(discovery_socket, (const struct sockaddr *)&to_addr, sizeof(to_addr));
 
     if ((rc < 0) && (errno != EINPROGRESS)) {
@@ -273,7 +269,7 @@ static void discover(struct ifaddrs* iface, int discflag) {
     }
 
     // Step 4. reset the socket to normal (blocking) mode
-    fcntl(discovery_socket, F_SETFL, flags &  ~O_NONBLOCK);
+    set_nonblocking(discovery_socket, 0);
     break;
 
   default:

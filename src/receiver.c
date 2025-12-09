@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "windows_compat.h"
 #include <wdsp.h>
 
 #include "agc.h"
@@ -55,8 +56,12 @@
 #include "new_menu.h"
 #include "message.h"
 
+#ifndef min
 #define min(x,y) (x<y?x:y)
+#endif
+#ifndef max
 #define max(x,y) (x<y?y:x)
+#endif
 
 static int last_x;
 static gboolean has_moved = FALSE;

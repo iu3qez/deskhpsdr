@@ -10,7 +10,9 @@ extern "C" {
 #define OUTREAL   float
 #define dINREAL   float
 #define dOUTREAL  float
+#ifndef _WIN32
 #define DWORD     unsigned long
+#endif
 
 // analyzer
 #define DETECTOR_MODE_PEAK         0

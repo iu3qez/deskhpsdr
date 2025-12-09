@@ -237,9 +237,7 @@ static void new_discover(struct ifaddrs* iface, int discflag) {
 
   int optval = 1;
   setsockopt(discovery_socket, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
-#ifndef _WIN32
   setsockopt(discovery_socket, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
-#endif
   rc = devices;
   // start a receive thread to collect discovery response packets
   discover_thread_id = g_thread_new( "new discover receive", new_discover_receive_thread, NULL);

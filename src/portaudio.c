@@ -21,6 +21,7 @@
 
 #ifdef PORTAUDIO
 //
+//
 // Alternate "audio" module using PORTAUDIO instead of ALSA
 // (e.g. on MacOS)
 //
@@ -40,6 +41,7 @@
 #include <sched.h>
 #include <semaphore.h>
 #include <portaudio.h>
+#include "windows_compat.h"
 
 #ifdef __APPLE__
   #include <pa_mac_core.h>
