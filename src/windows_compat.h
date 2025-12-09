@@ -10,6 +10,7 @@
     #include <windows.h>
     #include <io.h>
     #include <process.h>
+    #include <iphlpapi.h> // For GetAdaptersAddresses
 
     // Undefine macros from windows.h/wingdi.h that conflict with application enums
     #undef RELATIVE
@@ -29,9 +30,44 @@
     void windows_socket_init(void);
     void windows_socket_cleanup(void);
 
+
+
     // Map usleep to Sleep (which takes milliseconds)
     // usleep takes microseconds, so we divide by 1000
+
     #define usleep(x) Sleep((x)/1000)
+
+    // Stub for Windows compilation to handle missing ifaddrs.h
+    struct ifaddrs {
+        struct ifaddrs  *ifa_next;
+        char            *ifa_name;
+        unsigned int     ifa_flags;
+        struct sockaddr *ifa_addr;
+        struct sockaddr *ifa_netmask;
+        struct sockaddr *ifa_broadaddr; /* Broadcast address */
+        void            *ifa_data;
+    };
+
+    int getifaddrs(struct ifaddrs **ifap);
+    void freeifaddrs(struct ifaddrs *ifa);
+
+    #ifndef IFF_UP
+    #define IFF_UP 0x1
+    #endif
+    #ifndef IFF_RUNNING
+    #define IFF_RUNNING 0x40
+    #endif
+    #ifndef IFF_LOOPBACK
+    #define IFF_LOOPBACK 0x8
+    #endif
+    #ifndef IFF_MULTICAST
+    #define IFF_MULTICAST 0x1000
+    #endif
+
+
+
+    // Macro for setsockopt casting
+    #define setsockopt(s, level, optname, optval, optlen) setsockopt(s, level, optname, (const char *)(optval), optlen)
 #else
     // POSIX systems
     #include <sys/socket.h>
