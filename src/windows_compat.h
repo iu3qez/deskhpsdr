@@ -53,6 +53,17 @@
 #if PLATFORM_WINDOWS
 
 /*
+ * Prevent Windows headers from defining symbols that conflict with application enums
+ * We define these as macros BEFORE including Windows headers, preventing typedef/define.
+ * These will be undefined immediately after the includes.
+ */
+#define SNB _SKIP_SNB_TYPEDEF       // Prevent objidl.h from defining SNB typedef
+#define ABSOLUTE _SKIP_ABSOLUTE     // Prevent wingdi.h from defining ABSOLUTE
+#define RELATIVE _SKIP_RELATIVE     // Prevent wingdi.h from defining RELATIVE
+#define PRESSED _SKIP_PRESSED       // Prevent potential Windows PRESSED macro
+#define RELEASED _SKIP_RELEASED     // Prevent potential Windows RELEASED macro
+
+/*
  * Windows Socket API (Winsock2)
  * IMPORTANT: winsock2.h must be included BEFORE windows.h to avoid conflicts
  */
@@ -60,10 +71,35 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <iphlpapi.h>
+
+/*
+ * Now undefine the macros we used to block Windows typedefs/macros
+ * This allows our application enums (in actions.h) to use these names
+ */
+#undef SNB
+#undef ABSOLUTE
+#undef RELATIVE
+#undef PRESSED
+#undef RELEASED
 #include <string.h>
 #include <stdio.h>     // For snprintf()
 #include <io.h>        // For _close(), _open(), etc.
 #include <stdarg.h>    // For va_list, va_start, va_end
+
+/*
+ * Network database compatibility (netdb.h)
+ * Windows has these functions in winsock2.h, not netdb.h
+ * Provide a compatibility header guard so code can include <netdb.h>
+ */
+#define _NETDB_H_  // Prevent any potential netdb.h include
+// struct hostent, gethostbyname, etc. are already in winsock2.h
+
+/*
+ * ARPA/inet compatibility (arpa/inet.h)
+ * Windows has these functions in winsock2.h and ws2tcpip.h, not arpa/inet.h
+ */
+#define _ARPA_INET_H  // Prevent any potential arpa/inet.h include
+// inet_ntoa, inet_addr, etc. are already in winsock2.h
 
 /*
  * Socket type compatibility
@@ -399,29 +435,11 @@ static inline char* realpath(const char *path, char *resolved_path) {
 }
 
 /*
- * gettimeofday() compatibility - POSIX function not in Windows
- * Windows uses GetSystemTimeAsFileTime or similar
+ * gettimeofday() - MinGW provides this, no need for compatibility wrapper
  * Note: struct timeval is already defined in winsock2.h
  */
-static inline int gettimeofday(struct timeval *tv, void *tz) {
-    FILETIME ft;
-    ULARGE_INTEGER uli;
-
-    if (!tv) return -1;
-
-    GetSystemTimeAsFileTime(&ft);
-    uli.LowPart = ft.dwLowDateTime;
-    uli.HighPart = ft.dwHighDateTime;
-
-    // Convert from 100-nanosecond intervals since 1601 to Unix epoch
-    // Windows epoch (1601-01-01) to Unix epoch (1970-01-01) is 11644473600 seconds
-    uli.QuadPart -= 116444736000000000ULL;
-
-    tv->tv_sec = (long)(uli.QuadPart / 10000000UL);
-    tv->tv_usec = (long)((uli.QuadPart % 10000000UL) / 10);
-
-    return 0;
-}
+// MinGW provides gettimeofday in sys/time.h, include it
+#include <sys/time.h>
 
 /*
  * fcntl() compatibility
@@ -457,6 +475,8 @@ static inline int fcntl(int fd, int cmd, ...) {
  */
 // bcopy is obsolete, use memmove
 #define bcopy(src, dst, len) memmove(dst, src, len)
+// bzero is obsolete, use memset
+#define bzero(ptr, len) memset(ptr, 0, len)
 
 /*
  * Other Windows-specific compatibility
@@ -480,6 +500,77 @@ static inline int winsock_init(void) {
 static inline void winsock_cleanup(void) {
     WSACleanup();
 }
+
+// Aliases for compatibility with code that uses windows_socket_* naming
+#define windows_socket_init winsock_init
+#define windows_socket_cleanup winsock_cleanup
+
+// sync() - force filesystem writes (not applicable on Windows, no-op)
+#define sync() ((void)0)
+
+/*
+ * Signal compatibility
+ * SIGPIPE doesn't exist on Windows (no broken pipes in same way)
+ */
+#ifndef SIGPIPE
+  #define SIGPIPE 13  // Dummy value, signal() will ignore it anyway
+#endif
+
+/*
+ * POSIX file I/O compatibility
+ */
+// MinGW provides these in io.h and fcntl.h, but ensure they're available
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <errno.h>
+
+// getpid() is in process.h (already included)
+// open(), close() are provided by MinGW as _open(), _close()
+// unlink() is provided as _unlink()
+#define unlink _unlink
+
+/*
+ * POSIX directory functions
+ */
+#include <direct.h>
+
+// mkdir on Windows takes only 1 argument (no mode), provide wrapper
+static inline int posix_mkdir(const char *path, int mode) {
+    (void)mode;  // Ignore mode on Windows
+    return _mkdir(path);
+}
+// Only define mkdir macro if not already defined
+#ifndef mkdir
+  #define mkdir posix_mkdir
+#endif
+
+// chdir is provided by MinGW as _chdir
+#define chdir _chdir
+
+/*
+ * User/password database (not available on Windows)
+ * Provide minimal stub for pwd.h functions
+ */
+// Define struct passwd (minimal, just what's needed)
+#ifndef _PWD_H_
+#define _PWD_H_
+struct passwd {
+    char *pw_name;   // user name
+    char *pw_dir;    // home directory
+    char *pw_shell;  // shell program
+    unsigned int pw_uid;  // user ID
+    unsigned int pw_gid;  // group ID
+};
+
+static inline unsigned int getuid(void) {
+    return 0;  // Always return 0 on Windows (no real UID concept)
+}
+
+static inline struct passwd* getpwuid(unsigned int uid) {
+    (void)uid;  // Unused
+    return NULL;  // Not implemented on Windows
+}
+#endif /* _PWD_H_ */
 
 /*
  * =============================================================================
@@ -610,6 +701,16 @@ static inline int set_socket_blocking(SOCKET sockfd) {
     if (flags == -1) return -1;
     return fcntl(sockfd, F_SETFL, flags & ~O_NONBLOCK);
 #endif
+}
+
+/**
+ * @brief Set socket non-blocking mode (legacy function name)
+ * @param sockfd Socket file descriptor
+ * @param enabled 1 to enable non-blocking, 0 to disable
+ * @return 0 on success, -1 on error
+ */
+static inline int set_nonblocking(SOCKET sockfd, int enabled) {
+    return enabled ? set_socket_nonblocking(sockfd) : set_socket_blocking(sockfd);
 }
 
 /*

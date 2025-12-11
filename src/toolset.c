@@ -22,20 +22,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <stdint.h>
-#include <semaphore.h>
-#include <netdb.h>
 #include <math.h>
 #include <time.h>
-#include <arpa/inet.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <pthread.h>
 
+#ifndef _WIN32
+#include <unistd.h>
+#include <semaphore.h>
+#include <netdb.h>
+#include <arpa/inet.h>
+#endif
+
 #include "toolset.h"
 #include "solar.h"
 #include "message.h"
+#include "windows_compat.h"  // POSIX compatibility on Windows
 
 #if defined (__APPLE__)
   #include <TargetConditionals.h>

@@ -49,11 +49,11 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#ifndef _WIN32
 #include <fcntl.h>
-#include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#ifndef _WIN32
+#include <unistd.h>
 #include <pwd.h>
 #endif
 
@@ -63,6 +63,7 @@
 #endif
 
 #include "message.h"
+#include "windows_compat.h"  // Provides POSIX compatibility on Windows
 
 char workdir[PATH_MAX];
 
