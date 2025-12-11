@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rm:*)",
+      "Bash(export PKG_CONFIG_PATH=/usr/x86_64-w64-mingw32/lib/pkgconfig:/usr/x86_64-w64-mingw32/lib64/pkgconfig:*)",
+      "Bash(pkg-config:*)",
+      "Bash(for lib in gtk+-3.0 fftw3 openssl libcurl libxml-2.0 json-c portaudio-2.0)",
+      "Bash(do pkg-config:*)",
+      "Bash(echo:*)",
+      "Bash(done)"
+    ]
+  }
+}
