@@ -150,6 +150,38 @@ static void enforce_x11_backend_policy(void) {
   g_setenv("GDK_BACKEND", "win32", TRUE);
   gdk_set_allowed_backends("win32");
   use_wayland = 0;
+
+  // Set up GTK paths relative to executable for portable distribution
+  {
+    char exe_path[MAX_PATH];
+    char base_dir[MAX_PATH];
+    char path_buf[MAX_PATH];
+
+    if (GetModuleFileNameA(NULL, exe_path, MAX_PATH) > 0) {
+      // Get directory containing the executable
+      char *last_sep = strrchr(exe_path, '\\');
+      if (last_sep) {
+        size_t dir_len = last_sep - exe_path;
+        strncpy(base_dir, exe_path, dir_len);
+        base_dir[dir_len] = '\0';
+
+        // Set GDK_PIXBUF_MODULE_FILE
+        snprintf(path_buf, MAX_PATH, "%s\\lib\\gdk-pixbuf-2.0\\2.10.0\\loaders.cache", base_dir);
+        g_setenv("GDK_PIXBUF_MODULE_FILE", path_buf, TRUE);
+
+        // Set GDK_PIXBUF_MODULEDIR
+        snprintf(path_buf, MAX_PATH, "%s\\lib\\gdk-pixbuf-2.0\\2.10.0\\loaders", base_dir);
+        g_setenv("GDK_PIXBUF_MODULEDIR", path_buf, TRUE);
+
+        // Set XDG_DATA_DIRS for icons and themes
+        snprintf(path_buf, MAX_PATH, "%s\\share", base_dir);
+        g_setenv("XDG_DATA_DIRS", path_buf, TRUE);
+
+        // Set GTK_DATA_PREFIX
+        g_setenv("GTK_DATA_PREFIX", base_dir, TRUE);
+      }
+    }
+  }
   return;
 #else
   const char *xdg = g_getenv("XDG_SESSION_TYPE");
