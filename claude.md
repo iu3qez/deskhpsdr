@@ -29,6 +29,7 @@ make -j4
 - Usare sempre `make` dalla directory `build/`, mai dalla root del progetto
 - La root contiene un Makefile che non è compatibile con la build MinGW
 - Il toolchain file si trova in `/opt/mingw-toolchain.cmake`
+- I diagnostici dell'IDE sono falsi positivi in questo caso, perché l'IDE non è configurato per il toolchain MinGW cross-compilation
 
 ### Dipendenze
 Tutte le dipendenze sono installate automaticamente nel devcontainer tramite il [Dockerfile](.devcontainer/Dockerfile):
