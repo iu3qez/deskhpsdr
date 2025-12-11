@@ -117,7 +117,8 @@ RUN apt-get update && apt-get install -y zstd && \
               mingw-w64-x86_64-hicolor-icon-theme mingw-w64-x86_64-adwaita-icon-theme \
               mingw-w64-x86_64-gdk-pixbuf2 mingw-w64-x86_64-librsvg mingw-w64-x86_64-libxml2 \
               mingw-w64-x86_64-shared-mime-info mingw-w64-x86_64-lzo2 mingw-w64-x86_64-lerc \
-              mingw-w64-x86_64-xz mingw-w64-x86_64-jbigkit mingw-w64-x86_64-zstd" && \
+              mingw-w64-x86_64-xz mingw-w64-x86_64-jbigkit mingw-w64-x86_64-zstd \
+              mingw-w64-x86_64-libiconv mingw-w64-x86_64-libusb" && \
     MSYS2_MIRROR="https://mirror.msys2.org/mingw/mingw64" && \
     # Funzione per scaricare ed estrarre pacchetto MSYS2
     for pkg_name in $PACKAGES; do \
@@ -134,6 +135,8 @@ RUN apt-get update && apt-get install -y zstd && \
             echo "ATTENZIONE: $pkg_name non trovato"; \
         fi; \
     done && \
+    # Correggi path nei file .pc (da /mingw64 a /usr/x86_64-w64-mingw32)
+    find /usr/x86_64-w64-mingw32 -name "*.pc" -exec sed -i 's|/mingw64|/usr/x86_64-w64-mingw32|g' {} \; && \
     apt-get remove -y zstd && apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*
 
