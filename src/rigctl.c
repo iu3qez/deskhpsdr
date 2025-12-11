@@ -7387,6 +7387,14 @@ int launch_serial_rigctl (int id) {
   }
 
   return 1;
+#else
+  // Windows: Serial port support not yet implemented
+  // FIXME: TODO - Implement Windows COM port support for rigctl
+  // See TODO.md for details on serial port implementation
+  (void)id;  // Suppress unused parameter warning
+  t_print("%s: Serial port support not available on Windows\n", __FUNCTION__);
+  return 0;
+#endif
 }
 
 // Serial Port close

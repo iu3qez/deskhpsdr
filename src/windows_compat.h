@@ -577,6 +577,27 @@ static inline struct passwd* getpwuid(unsigned int uid) {
 #endif /* _PWD_H_ */
 
 /*
+ * Thread-safe time functions
+ * MinGW doesn't provide gmtime_r, but has gmtime_s with different signature
+ */
+static inline struct tm* gmtime_r(const time_t *timep, struct tm *result) {
+    // Windows gmtime_s has reversed parameter order: gmtime_s(tm*, time_t*)
+    if (gmtime_s(result, timep) == 0) {
+        return result;
+    }
+    return NULL;
+}
+
+/*
+ * GPIO hardware support stubs (Linux-specific hardware)
+ * FIXME: TODO - GPIO support not available on Windows
+ * See TODO.md for details on GPIO hardware support
+ *
+ * Note: GPIO variable stubs (switches, encoders, etc.) are provided in gpio_stubs.c
+ * GPIO function stubs are declared in gpio.h and implemented as no-ops
+ */
+
+/*
  * =============================================================================
  * POSIX (Linux/macOS) INCLUDES AND DEFINITIONS
  * =============================================================================

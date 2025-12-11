@@ -119,8 +119,11 @@ if(WIN32)
         "${CMAKE_SOURCE_DIR}/src/alsa_midi.c"
         "${CMAKE_SOURCE_DIR}/src/mac_midi.c"
     )
-    # Add Windows MIDI implementation
-    list(APPEND SOURCES "${CMAKE_SOURCE_DIR}/src/windows_midi.c")
+    # Add Windows-specific implementations
+    list(APPEND SOURCES
+        "${CMAKE_SOURCE_DIR}/src/windows_midi.c"
+        "${CMAKE_SOURCE_DIR}/src/gpio_stubs.c"
+    )
 
     # Exclude Linux-specific hardware support on Windows
     list(REMOVE_ITEM SOURCES
