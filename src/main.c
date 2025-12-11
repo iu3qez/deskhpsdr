@@ -145,6 +145,12 @@ static void enforce_x11_backend_policy(void) {
   gdk_set_allowed_backends("quartz");
   use_wayland = 0;
   return;
+#elif defined(_WIN32)
+  // Windows uses native win32 backend
+  g_setenv("GDK_BACKEND", "win32", TRUE);
+  gdk_set_allowed_backends("win32");
+  use_wayland = 0;
+  return;
 #else
   const char *xdg = g_getenv("XDG_SESSION_TYPE");
   const char *w   = g_getenv("WAYLAND_DISPLAY");
