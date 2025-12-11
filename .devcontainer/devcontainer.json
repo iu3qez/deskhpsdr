@@ -1,0 +1,23 @@
+{
+  "name": "deskHPSDR MinGW Cross-Compilation",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cmake-tools",
+        "twxs.cmake"
+      ],
+      "settings": {
+        "cmake.configureSettings": {
+          "CMAKE_TOOLCHAIN_FILE": "/opt/mingw-toolchain.cmake"
+        },
+        "cmake.generator": "Unix Makefiles"
+      }
+    }
+  },
+  "remoteUser": "root",
+  "postCreateCommand": "echo 'MinGW devcontainer pronto! Usa: mkdir build && cd build && cmake -DCMAKE_TOOLCHAIN_FILE=/opt/mingw-toolchain.cmake .. && make'"
+}
