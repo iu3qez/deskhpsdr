@@ -33,8 +33,7 @@ RUN echo 'set(CMAKE_SYSTEM_NAME Windows)' > /opt/mingw-toolchain.cmake && \
     echo 'set(CMAKE_FIND_ROOT_PATH /usr/x86_64-w64-mingw32)' >> /opt/mingw-toolchain.cmake && \
     echo 'set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)' >> /opt/mingw-toolchain.cmake && \
     echo 'set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)' >> /opt/mingw-toolchain.cmake && \
-    echo 'set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)' >> /opt/mingw-toolchain.cmake && \
-    echo 'set(PKG_CONFIG_EXECUTABLE /usr/bin/x86_64-w64-mingw32-pkg-config)' >> /opt/mingw-toolchain.cmake
+    echo 'set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)' >> /opt/mingw-toolchain.cmake
 
 # Installa le dipendenze mancanti compilandole da source
 # (GTK3, FFTW3, OpenSSL, libcurl, libxml2, json-c, portaudio per MinGW)
