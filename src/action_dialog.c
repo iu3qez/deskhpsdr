@@ -19,6 +19,7 @@
 *
 */
 
+#include "windows_compat.h"  // Must be first for SNB workaround
 #include <gtk/gtk.h>
 #include "main.h"
 #include "actions.h"

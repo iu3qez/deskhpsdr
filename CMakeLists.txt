@@ -22,7 +22,7 @@ if(WIN32)
     add_definitions(-DPORTAUDIO)
     # Windows specific definitions
     add_definitions(-D_WIN32_WINNT=0x0600) # Target Windows Vista or later
-    set(PLATFORM_LIBS ws2_32)
+    set(PLATFORM_LIBS ws2_32 winmm iphlpapi)
 elseif(APPLE)
     message(STATUS "Building for macOS")
     pkg_check_modules(PORTAUDIO REQUIRED portaudio-2.0)
@@ -100,13 +100,13 @@ list(REMOVE_ITEM SOURCES
 
 # MIDI sources
 if(WIN32)
-    # No MIDI support for Windows yet? Or use portmidi?
-    # Keeping it minimal as per plan, focused on compilation first.
-    # Excluding linux/mac specific MIDI files
+    # Windows MIDI support using Windows Multimedia API
     list(REMOVE_ITEM SOURCES
         "${CMAKE_SOURCE_DIR}/src/alsa_midi.c"
         "${CMAKE_SOURCE_DIR}/src/mac_midi.c"
     )
+    # Add Windows MIDI implementation
+    list(APPEND SOURCES "${CMAKE_SOURCE_DIR}/src/windows_midi.c")
     # FIXME: SoapySDR not available on Windows
     # TODO: Add SoapySDR support for Windows if needed
     list(REMOVE_ITEM SOURCES

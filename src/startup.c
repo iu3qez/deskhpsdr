@@ -48,12 +48,14 @@
 //
 
 #include <stdio.h>
+#include <stdlib.h>
+#ifndef _WIN32
 #include <fcntl.h>
 #include <unistd.h>
-#include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <pwd.h>
+#endif
 
 #ifdef __APPLE__
   #include <IOKit/IOKitLib.h>
