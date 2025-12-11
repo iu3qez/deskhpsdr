@@ -7425,6 +7425,10 @@ void disable_serial_rigctl (int id) {
     close(serial_client[id].fd);
     serial_client[id].fd = -1;
   }
+#else
+  // FIXME: Implement serial port support for Windows
+  return 0;
+#endif
 }
 
 void launch_tcp_rigctl () {

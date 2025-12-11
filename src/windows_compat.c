@@ -179,4 +179,27 @@ void set_nonblocking(SOCKET sock, int enable) {
     u_long mode = enable ? 1 : 0;
     ioctlsocket(sock, FIONBIO, &mode);
 }
+
+// FIXME: Implement proper sendmsg/recvmsg for Windows
+// These are stubs for compilation - need proper scatter-gather I/O implementation
+ssize_t sendmsg(SOCKET sockfd, const struct msghdr *msg, int flags) {
+    // Simplified implementation: send first iovec buffer
+    if (msg && msg->msg_iov && msg->msg_iovlen > 0) {
+        return sendto(sockfd, (const char*)msg->msg_iov[0].iov_base,
+                     msg->msg_iov[0].iov_len, flags,
+                     (struct sockaddr*)msg->msg_name, msg->msg_namelen);
+    }
+    return -1;
+}
+
+ssize_t recvmsg(SOCKET sockfd, struct msghdr *msg, int flags) {
+    // Simplified implementation: receive into first iovec buffer
+    if (msg && msg->msg_iov && msg->msg_iovlen > 0) {
+        msg->msg_namelen = sizeof(struct sockaddr_storage);
+        return recvfrom(sockfd, (char*)msg->msg_iov[0].iov_base,
+                       msg->msg_iov[0].iov_len, flags,
+                       (struct sockaddr*)msg->msg_name, &msg->msg_namelen);
+    }
+    return -1;
+}
 #endif

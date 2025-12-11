@@ -104,6 +104,30 @@
     // Shim for sync
     #define sync() _flushall()
 
+    // Thread-safe time conversion wrapper
+    #define gmtime_r(timep, result) (gmtime_s((result), (timep)) == 0 ? (result) : NULL)
+
+    // POSIX scatter-gather I/O structures (used by sendmsg/recvmsg)
+    struct iovec {
+        void  *iov_base;
+        size_t iov_len;
+    };
+
+    struct msghdr {
+        void         *msg_name;
+        socklen_t     msg_namelen;
+        struct iovec *msg_iov;
+        size_t        msg_iovlen;
+        void         *msg_control;
+        size_t        msg_controllen;
+        int           msg_flags;
+    };
+
+    // FIXME: Implement sendmsg/recvmsg for Windows
+    // For now, provide stub declarations
+    ssize_t sendmsg(SOCKET sockfd, const struct msghdr *msg, int flags);
+    ssize_t recvmsg(SOCKET sockfd, struct msghdr *msg, int flags);
+
     // Baud rate constants
     #define B4800   4800
     #define B9600   9600

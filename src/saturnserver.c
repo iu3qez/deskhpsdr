@@ -42,14 +42,16 @@
 #include <limits.h>
 #include <stdint.h>
 #include <string.h>
+#ifndef _WIN32
 #include <unistd.h>
 #include <fcntl.h>
-#include <math.h>
-#include <pthread.h>
 #include <termios.h>
-#include "windows_compat.h"
 #include <sys/time.h>
 #include <semaphore.h>
+#endif
+#include <math.h>
+#include <pthread.h>
+#include "windows_compat.h"
 
 #include "saturnregisters.h"              // register I/O for Saturn
 #include "saturnserver.h"
