@@ -6,13 +6,24 @@
 
 #ifdef _WIN32
 
-#include <windows.h>
-#include <mmsystem.h>
+#include <gtk/gtk.h>
 #include <stdio.h>
 
+#include "windows_compat.h"  // Provides Windows API compatibility (includes windows.h with proper symbol blocking)
+#include <mmsystem.h>
+
+#include "actions.h"  // For ACTIONtype enum
 #include "midi.h"
-#include "midi_menu.h" 
-#include "message.h" 
+#include "midi_menu.h"
+#include "message.h"
+
+// Windows MIDI device definitions (equivalent to alsa_midi.h)
+typedef struct _midi_device {
+  char *name;
+  int  active;
+} MIDI_DEVICE;
+
+#define MAX_MIDI_DEVICES 10 
 
 MIDI_DEVICE midi_devices[MAX_MIDI_DEVICES];
 int n_midi_devices = 0;

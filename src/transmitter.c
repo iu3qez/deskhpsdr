@@ -24,12 +24,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "main.h"  // Must be before wdsp.h to ensure Windows types are defined
 #include <wdsp.h>
 
 #include "band.h"
 #include "bandstack.h"
 #include "channel.h"
-#include "main.h"
 #include "receiver.h"
 #include "meter.h"
 #include "filter.h"

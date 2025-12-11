@@ -22,7 +22,8 @@ if(WIN32)
     add_definitions(-DPORTAUDIO)
     # Windows specific definitions
     add_definitions(-D_WIN32_WINNT=0x0600) # Target Windows Vista or later
-    set(PLATFORM_LIBS ws2_32 winmm iphlpapi)
+    add_definitions(-DCURL_STATICLIB) # Use static curl library
+    set(PLATFORM_LIBS ws2_32 winmm iphlpapi avrt curl)
 elseif(APPLE)
     message(STATUS "Building for macOS")
     pkg_check_modules(PORTAUDIO REQUIRED portaudio-2.0)
@@ -77,6 +78,19 @@ include_directories(
 
 if(PORTAUDIO_FOUND)
     include_directories(${PORTAUDIO_INCLUDE_DIRS})
+endif()
+
+# Link directories for libraries
+link_directories(
+    ${OPENSSL_LIBRARY_DIRS}
+    ${LIBCURL_LIBRARY_DIRS}
+    ${LIBXML2_LIBRARY_DIRS}
+    ${JSONC_LIBRARY_DIRS}
+    ${FFTW3_LIBRARY_DIRS}
+)
+
+if(PORTAUDIO_FOUND)
+    link_directories(${PORTAUDIO_LIBRARY_DIRS})
 endif()
 
 # Subdirectories for libraries

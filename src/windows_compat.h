@@ -477,6 +477,10 @@ static inline int fcntl(int fd, int cmd, ...) {
 #define bcopy(src, dst, len) memmove(dst, src, len)
 // bzero is obsolete, use memset
 #define bzero(ptr, len) memset(ptr, 0, len)
+// index is obsolete, use strchr
+#define index(s, c) strchr(s, c)
+// rindex is obsolete, use strrchr
+#define rindex(s, c) strrchr(s, c)
 
 /*
  * Other Windows-specific compatibility
