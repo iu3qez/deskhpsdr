@@ -121,11 +121,17 @@ if(WIN32)
     )
     # Add Windows MIDI implementation
     list(APPEND SOURCES "${CMAKE_SOURCE_DIR}/src/windows_midi.c")
-    # FIXME: SoapySDR not available on Windows
-    # TODO: Add SoapySDR support for Windows if needed
+
+    # Exclude Linux-specific hardware support on Windows
     list(REMOVE_ITEM SOURCES
         "${CMAKE_SOURCE_DIR}/src/soapy_discovery.c"
         "${CMAKE_SOURCE_DIR}/src/soapy_protocol.c"
+        "${CMAKE_SOURCE_DIR}/src/ozyio.c"              # USB hardware (libusb)
+        "${CMAKE_SOURCE_DIR}/src/saturn_menu.c"        # Saturn hardware
+        "${CMAKE_SOURCE_DIR}/src/saturndrivers.c"
+        "${CMAKE_SOURCE_DIR}/src/saturnmain.c"
+        "${CMAKE_SOURCE_DIR}/src/saturnregisters.c"
+        "${CMAKE_SOURCE_DIR}/src/saturnserver.c"
     )
 elseif(APPLE)
      list(REMOVE_ITEM SOURCES "${CMAKE_SOURCE_DIR}/src/alsa_midi.c")
