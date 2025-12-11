@@ -288,6 +288,20 @@ NOTES
 - You can run the application from any location (USB drive, desktop, etc.)
 - Configuration files will be stored in your Windows user profile
 
+RUNNING WITH WINE (Linux/macOS)
+-------------------------------
+If you want to test the application with Wine on Linux or macOS:
+
+1. Install Wine (version 3.0 or higher recommended)
+2. Run: wine deskhpsdr.exe
+
+Known Wine warnings (these are non-critical and can be ignored):
+- "Failed to load module gail:atk-bridge" - GTK accessibility module
+- "ntlm_auth was not found" - Windows authentication (not needed)
+- GDK backend warnings - display system compatibility
+
+The application should work despite these warnings.
+
 SUPPORT & DOCUMENTATION
 -----------------------
 For issues, documentation, and source code:
@@ -356,6 +370,17 @@ main() {
     # Copia le DLL
     copy_dlls "$dll_list"
     rm "$dll_list"
+    echo
+
+    # Copia DLL opzionali ma utili (non dipendenze dirette, ma richieste da GTK a runtime)
+    log_info "Copying optional GTK runtime DLLs..."
+    optional_dlls="libgailutil-3-0.dll"
+    for dll in $optional_dlls; do
+        if [ -f "$MINGW_BIN/$dll" ]; then
+            cp "$MINGW_BIN/$dll" "$DIST_DIR/"
+            log_info "  + $dll"
+        fi
+    done
     echo
 
     # Copia i file di runtime
