@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y \
     # Utility
     wget \
     unzip \
+    zip \
     tar \
     && rm -rf /var/lib/apt/lists/*
 
