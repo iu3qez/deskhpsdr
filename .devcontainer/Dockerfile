@@ -21,6 +21,8 @@ RUN apt-get update && apt-get install -y \
     unzip \
     zip \
     tar \
+    file \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Crea directory per le librerie cross-compilate

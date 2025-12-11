@@ -1,5 +1,6 @@
 {
   "name": "deskHPSDR MinGW Cross-Compilation",
+  "initializeCommand": "mkdir -p ${HOME}/.claude && touch ${HOME}/.claude.json",
   "build": {
     "dockerfile": "Dockerfile",
     "options": [
@@ -23,7 +24,7 @@
     }
   },
   "remoteUser": "root",
-  "postCreateCommand": "echo 'MinGW devcontainer pronto! Usa: mkdir build && cd build && cmake -DCMAKE_TOOLCHAIN_FILE=/opt/mingw-toolchain.cmake .. && make'",
+  "postCreateCommand": "echo '✓ MinGW devcontainer pronto!' && echo '' && echo 'Per compilare:' && echo '  mkdir -p build && cd build' && echo '  cmake -DCMAKE_TOOLCHAIN_FILE=/opt/mingw-toolchain.cmake ..' && echo '  make -j4' && echo '' && echo 'Verifica ambiente:' && export PKG_CONFIG_PATH=/usr/x86_64-w64-mingw32/lib/pkgconfig:/usr/x86_64-w64-mingw32/lib64/pkgconfig && pkg-config --exists gtk+-3.0 && echo '  ✓ GTK3 OK' || echo '  ✗ GTK3 MANCANTE - ricostruire il container!'",
   "mounts": [
     "source=${localEnv:HOME}/.claude,target=/root/.claude,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.claude.json,target=/root/.claude.json,type=bind,consistency=cached"
