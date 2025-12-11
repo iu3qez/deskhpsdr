@@ -71,6 +71,7 @@
 
 #ifndef min
 #define min(x,y) (x<y?x:y)
+#endif
 
 #define PI 3.1415926535897932F
 
