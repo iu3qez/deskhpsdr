@@ -100,12 +100,18 @@ list(REMOVE_ITEM SOURCES
 
 # MIDI sources
 if(WIN32)
-    # No MIDI support for Windows yet? Or use portmidi? 
+    # No MIDI support for Windows yet? Or use portmidi?
     # Keeping it minimal as per plan, focused on compilation first.
     # Excluding linux/mac specific MIDI files
-    list(REMOVE_ITEM SOURCES 
+    list(REMOVE_ITEM SOURCES
         "${CMAKE_SOURCE_DIR}/src/alsa_midi.c"
         "${CMAKE_SOURCE_DIR}/src/mac_midi.c"
+    )
+    # FIXME: SoapySDR not available on Windows
+    # TODO: Add SoapySDR support for Windows if needed
+    list(REMOVE_ITEM SOURCES
+        "${CMAKE_SOURCE_DIR}/src/soapy_discovery.c"
+        "${CMAKE_SOURCE_DIR}/src/soapy_protocol.c"
     )
 elseif(APPLE)
      list(REMOVE_ITEM SOURCES "${CMAKE_SOURCE_DIR}/src/alsa_midi.c")
