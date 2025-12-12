@@ -448,7 +448,9 @@ main() {
 
     # Copia DLL opzionali ma utili (non dipendenze dirette, ma richieste da GTK a runtime)
     log_info "Copying optional GTK runtime DLLs..."
-    optional_dlls="libgailutil-3-0.dll"
+    # librsvg-2-2.dll: Required by SVG pixbuf loader
+    # libgailutil-3-0.dll: GTK accessibility support
+    optional_dlls="libgailutil-3-0.dll librsvg-2-2.dll"
     for dll in $optional_dlls; do
         if [ -f "$MINGW_BIN/$dll" ]; then
             cp "$MINGW_BIN/$dll" "$DIST_DIR/"
