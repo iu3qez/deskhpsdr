@@ -1002,6 +1002,153 @@ static inline int sendmsg_compat(SOCKET s, const struct msghdr *msg, int flags) 
 #define recvmsg recvmsg_compat
 #define sendmsg sendmsg_compat
 
+/*
+ * =============================================================================
+ * USER DATA DIRECTORY FUNCTIONS
+ * =============================================================================
+ * Cross-platform functions to get application data directories
+ * Windows: Uses %LOCALAPPDATA%\deskhpsdr\
+ * Linux:   Uses $XDG_DATA_HOME/deskhpsdr/ or ~/.local/share/deskhpsdr/
+ */
+
+/**
+ * Get platform-specific user data directory for deskhpsdr
+ * @param buffer Buffer to store the directory path
+ * @param bufsize Size of the buffer
+ * @return 0 on success, -1 on error
+ */
+static inline int get_user_data_dir(char *buffer, size_t bufsize) {
+    if (!buffer || bufsize == 0) {
+        return -1;
+    }
+
+    const char *localappdata = getenv("LOCALAPPDATA");
+    if (localappdata) {
+        snprintf(buffer, bufsize, "%s\\deskhpsdr\\", localappdata);
+    } else {
+        // Fallback: use %APPDATA% or %USERPROFILE%
+        const char *appdata = getenv("APPDATA");
+        if (appdata) {
+            snprintf(buffer, bufsize, "%s\\deskhpsdr\\", appdata);
+        } else {
+            const char *userprofile = getenv("USERPROFILE");
+            if (userprofile) {
+                snprintf(buffer, bufsize, "%s\\AppData\\Local\\deskhpsdr\\", userprofile);
+            } else {
+                // Last resort: current directory
+                if (getcwd(buffer, bufsize)) {
+                    size_t len = strlen(buffer);
+                    if (len + 1 < bufsize) {
+                        buffer[len] = '\\';
+                        buffer[len + 1] = '\0';
+                    }
+                } else {
+                    return -1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+/**
+ * Create directory if it doesn't exist
+ * @param path Directory path to create
+ * @return 0 on success, -1 on error
+ */
+static inline int create_directory_if_missing(const char *path) {
+    if (!path) {
+        return -1;
+    }
+
+    // Check if directory exists
+    DWORD attrib = GetFileAttributesA(path);
+    if (attrib != INVALID_FILE_ATTRIBUTES && (attrib & FILE_ATTRIBUTE_DIRECTORY)) {
+        // Directory already exists
+        return 0;
+    }
+
+    // Create directory
+    if (CreateDirectoryA(path, NULL) || GetLastError() == ERROR_ALREADY_EXISTS) {
+        return 0;
+    }
+
+    return -1;
+}
+
 #endif /* PLATFORM_WINDOWS */
+
+/*
+ * =============================================================================
+ * POSIX USER DATA DIRECTORY FUNCTIONS
+ * =============================================================================
+ */
+#if !PLATFORM_WINDOWS
+
+#include <sys/stat.h>
+
+/**
+ * Get platform-specific user data directory for deskhpsdr (POSIX version)
+ * @param buffer Buffer to store the directory path
+ * @param bufsize Size of the buffer
+ * @return 0 on success, -1 on error
+ */
+static inline int get_user_data_dir(char *buffer, size_t bufsize) {
+    if (!buffer || bufsize == 0) {
+        return -1;
+    }
+
+    // Try XDG_DATA_HOME first
+    const char *xdg_data = getenv("XDG_DATA_HOME");
+    if (xdg_data) {
+        snprintf(buffer, bufsize, "%s/deskhpsdr/", xdg_data);
+        return 0;
+    }
+
+    // Fallback: ~/.local/share/deskhpsdr/
+    const char *home = getenv("HOME");
+    if (home) {
+        snprintf(buffer, bufsize, "%s/.local/share/deskhpsdr/", home);
+        return 0;
+    }
+
+    // Last resort: current directory
+    if (getcwd(buffer, bufsize)) {
+        size_t len = strlen(buffer);
+        if (len + 1 < bufsize) {
+            buffer[len] = '/';
+            buffer[len + 1] = '\0';
+        }
+        return 0;
+    }
+
+    return -1;
+}
+
+/**
+ * Create directory if it doesn't exist (POSIX version)
+ * @param path Directory path to create
+ * @return 0 on success, -1 on error
+ */
+static inline int create_directory_if_missing(const char *path) {
+    if (!path) {
+        return -1;
+    }
+
+    struct stat st;
+    if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+        // Directory already exists
+        return 0;
+    }
+
+    // Create directory with user rwx permissions
+    if (mkdir(path, 0755) == 0 || errno == EEXIST) {
+        return 0;
+    }
+
+    return -1;
+}
+
+#endif /* !PLATFORM_WINDOWS */
 
 #endif /* WINDOWS_COMPAT_H */

@@ -155,17 +155,17 @@ CACHEHEADER
         # PNG loader - essenziale per GTK
         cat >> "$loaders_base/loaders.cache" <<'PNGLOADER'
 "lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-png.dll"
-"png" 5 "gdk-pixbuf"
+"png" 2 "gdk-pixbuf" "PNG image format"
 "image/png" ""
 "png" ""
-"\x89PNG" "" 100
+"\x89PNG\x0d\x0a\x1a\x0a" "" 100
 
 PNGLOADER
 
         # BMP loader
         cat >> "$loaders_base/loaders.cache" <<'BMPLOADER'
 "lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-bmp.dll"
-"bmp" 5 "gdk-pixbuf"
+"bmp" 2 "gdk-pixbuf" "BMP image format"
 "image/bmp" "image/x-bmp" "image/x-MS-bmp" ""
 "bmp" ""
 "BM" "" 100
@@ -175,7 +175,7 @@ BMPLOADER
         # GIF loader
         cat >> "$loaders_base/loaders.cache" <<'GIFLOADER'
 "lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-gif.dll"
-"gif" 5 "gdk-pixbuf"
+"gif" 6 "gdk-pixbuf" "GIF image format"
 "image/gif" ""
 "gif" ""
 "GIF8" "" 100
@@ -185,7 +185,7 @@ GIFLOADER
         # JPEG loader
         cat >> "$loaders_base/loaders.cache" <<'JPEGLOADER'
 "lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-jpeg.dll"
-"jpeg" 5 "gdk-pixbuf"
+"jpeg" 2 "gdk-pixbuf" "JPEG image format"
 "image/jpeg" ""
 "jpeg" "jpe" "jpg" ""
 "\xff\xd8" "" 100
@@ -195,7 +195,7 @@ JPEGLOADER
         # ICO loader
         cat >> "$loaders_base/loaders.cache" <<'ICOLOADER'
 "lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-ico.dll"
-"ico" 5 "gdk-pixbuf"
+"ico" 2 "gdk-pixbuf" "Windows icon format"
 "image/x-icon" "image/x-ico" "image/x-win-bitmap" ""
 "ico" "cur" ""
 "\x00\x00\x01\x00" "xxxx" 100
@@ -206,7 +206,7 @@ ICOLOADER
         # SVG loader
         cat >> "$loaders_base/loaders.cache" <<'SVGLOADER'
 "lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-svg.dll"
-"svg" 5 "gdk-pixbuf"
+"svg" 2 "gdk-pixbuf" "Scalable Vector Graphics format"
 "image/svg+xml" "image/svg" "image/svg-xml" ""
 "svg" "svgz" "svg.gz" ""
 " <svg" "*   " 100
@@ -217,7 +217,7 @@ SVGLOADER
         # XPM loader
         cat >> "$loaders_base/loaders.cache" <<'XPMLOADER'
 "lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-xpm.dll"
-"xpm" 5 "gdk-pixbuf"
+"xpm" 2 "gdk-pixbuf" "X Pixmap format"
 "image/x-xpixmap" ""
 "xpm" ""
 "/* XPM */" "" 100
@@ -227,7 +227,7 @@ XPMLOADER
         # TIFF loader
         cat >> "$loaders_base/loaders.cache" <<'TIFFLOADER'
 "lib/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-tiff.dll"
-"tiff" 5 "gdk-pixbuf"
+"tiff" 2 "gdk-pixbuf" "TIFF image format"
 "image/tiff" ""
 "tiff" "tif" ""
 "MM\x00*" "" 100

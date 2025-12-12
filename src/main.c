@@ -744,6 +744,8 @@ static GdkPixbuf *create_pixbuf_from_data() {
 static int init(void *data) {
   char wisdom_directory[1025];
   char text[1024];
+  char old_wisdom_path[1024];
+  char new_wisdom_path[1024];
 
 // Windows socket initialization is now handled by windows_socket_init() called at the start of main()
 
@@ -765,13 +767,63 @@ static int init(void *data) {
     gdk_window_set_cursor(gtk_widget_get_window(top_window), cursor_watch);
   }
   //
-  // Let WDSP (via FFTW) check for wisdom file in current dir
-  // If there is one, the "wisdom thread" takes no time
+  // Get platform-specific user data directory for wisdom file
+  // Windows: %LOCALAPPDATA%\deskhpsdr\
+  // Linux:   ~/.local/share/deskhpsdr/
   // Depending on the WDSP version, the file is wdspWisdom or wdspWisdom00.
   //
-  (void) getcwd(text, sizeof(text));
-  snprintf(wisdom_directory, sizeof(wisdom_directory), "%s/", text);
-  t_print("Securing wisdom file in directory: %s\n", wisdom_directory);
+  if (get_user_data_dir(wisdom_directory, sizeof(wisdom_directory)) != 0) {
+    // Fallback to current directory if get_user_data_dir fails
+    (void) getcwd(text, sizeof(text));
+#ifdef _WIN32
+    snprintf(wisdom_directory, sizeof(wisdom_directory), "%s\\", text);
+#else
+    snprintf(wisdom_directory, sizeof(wisdom_directory), "%s/", text);
+#endif
+    t_print("WARNING: Could not get user data directory, using current dir: %s\n", wisdom_directory);
+  } else {
+    // Create the directory if it doesn't exist
+    if (create_directory_if_missing(wisdom_directory) != 0) {
+      t_print("WARNING: Could not create wisdom directory: %s\n", wisdom_directory);
+    } else {
+      t_print("Using user data directory for wisdom file: %s\n", wisdom_directory);
+    }
+
+    // Backward compatibility: check if old wisdom file exists in current directory
+    // and migrate it to the new location
+    (void) getcwd(text, sizeof(text));
+#ifdef _WIN32
+    snprintf(old_wisdom_path, sizeof(old_wisdom_path), "%s\\wdspWisdom00", text);
+    snprintf(new_wisdom_path, sizeof(new_wisdom_path), "%swdspWisdom00", wisdom_directory);
+#else
+    snprintf(old_wisdom_path, sizeof(old_wisdom_path), "%s/wdspWisdom00", text);
+    snprintf(new_wisdom_path, sizeof(new_wisdom_path), "%swdspWisdom00", wisdom_directory);
+#endif
+
+    // Check if old file exists and new file doesn't
+    FILE *old_file = fopen(old_wisdom_path, "r");
+    if (old_file) {
+      fclose(old_file);
+      FILE *new_file = fopen(new_wisdom_path, "r");
+      if (!new_file) {
+        // Old file exists, new file doesn't - migrate it
+        t_print("Migrating existing wisdom file from %s to %s\n", old_wisdom_path, new_wisdom_path);
+        if (rename(old_wisdom_path, new_wisdom_path) == 0) {
+          t_print("Wisdom file migrated successfully\n");
+        } else {
+          t_print("WARNING: Could not migrate wisdom file, will be regenerated\n");
+        }
+      } else {
+        fclose(new_file);
+        // Both files exist - keep the newer one and inform user
+        t_print("NOTE: Wisdom files exist in both old and new locations\n");
+        t_print("      Using new location: %s\n", new_wisdom_path);
+        t_print("      You can delete the old file at: %s\n", old_wisdom_path);
+      }
+    }
+  }
+
+  t_print("Wisdom file directory: %s\n", wisdom_directory);
   status_text("Checking FFTW Wisdom file ...");
   wisdom_running = 1;
   pthread_create(&wisdom_thread_id, NULL, wisdom_thread, wisdom_directory);
