@@ -33,7 +33,7 @@ warren@wpratt.com
 #endif
 
 #ifdef _WIN32
-  #include <Windows.h>
+  #include <windows.h>
   #include <process.h>
   #include <intrin.h>
 #endif

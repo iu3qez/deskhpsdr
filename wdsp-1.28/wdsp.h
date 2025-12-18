@@ -4,13 +4,19 @@
 extern "C" {
 #endif
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #define WDSP127
 
 #define INREAL    float
 #define OUTREAL   float
 #define dINREAL   float
 #define dOUTREAL  float
+#ifndef _WIN32
 #define DWORD     unsigned long
+#endif
 
 // analyzer
 #define DETECTOR_MODE_PEAK         0
@@ -65,8 +71,10 @@ enum txaMeterType {
 //
 // Take care of some "Windows specialities"
 //
+#ifndef _WIN32
 #define __stdcall
 #define LPCRITICAL_SECTION void*
+#endif
 
 //
 // To make the interface simpler, use "void *" for
