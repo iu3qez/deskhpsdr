@@ -117,6 +117,8 @@ include_directories(
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/wdsp-1.28
     ${CMAKE_SOURCE_DIR}/Windows
+    ${CMAKE_SOURCE_DIR}/libtelnet
+    ${CMAKE_SOURCE_DIR}/libsolar
     ${GTK3_INCLUDE_DIRS}
     ${FFTW3_INCLUDE_DIRS}
     ${OPENSSL_INCLUDE_DIRS}
@@ -172,7 +174,7 @@ set(CORE_SOURCES
     src/band.c
     src/band_menu.c
     src/bandstack_menu.c
-    src/bootloader.c
+    # bootloader.c excluded - requires libpcap (WinPcap/Npcap on Windows)
     src/configure.c
     src/css.c
     src/cw_menu.c
@@ -226,12 +228,12 @@ set(CORE_SOURCES
     src/tci.c
     src/toolbar.c
     src/toolbar_menu.c
-    src/toolset.c
+    # toolset.c excluded - requires libxml2 (via libsolar)
     src/transmitter.c
     src/tx_menu.c
     src/tx_panadapter.c
-    src/udplistener.c
-    src/udpsender.c
+    # udplistener.c excluded - uses fork(), execl(), posix_openpt() (not portable)
+    # udpsender.c excluded - standalone tool with its own main()
     src/version.c
     src/vfo.c
     src/vfo_menu.c
@@ -249,6 +251,23 @@ set(CORE_SOURCES
 set(WINDOWS_SOURCES
     Windows/windows_compat.c
 )
+
+#######################################################################################
+# libtelnet (for DX Cluster support)
+#######################################################################################
+
+set(LIBTELNET_SOURCES
+    libtelnet/libtelnet.c
+)
+
+#######################################################################################
+# libsolar (for solar calculations - greyline map)
+#######################################################################################
+
+# libsolar excluded - requires libxml2 (only used by toolset.c)
+# set(LIBSOLAR_SOURCES
+#     libsolar/solar.c
+# )
 
 #######################################################################################
 # Audio - PortAudio for Windows
@@ -326,12 +345,52 @@ target_include_directories(wdsp PRIVATE ${CMAKE_SOURCE_DIR}/wdsp-1.28 ${FFTW3_IN
 target_compile_definitions(wdsp PRIVATE _WIN32)
 
 #######################################################################################
+# Git Version Information
+#######################################################################################
+
+execute_process(
+    COMMAND git describe --abbrev=0 --tags
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE GIT_VERSION
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT GIT_VERSION)
+    set(GIT_VERSION "unknown")
+endif()
+
+execute_process(
+    COMMAND git log -1 --format=%h
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE GIT_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT GIT_COMMIT)
+    set(GIT_COMMIT "unknown")
+endif()
+
+execute_process(
+    COMMAND git rev-parse --abbrev-ref HEAD
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE GIT_BRANCH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT GIT_BRANCH)
+    set(GIT_BRANCH "unknown")
+endif()
+
+string(TIMESTAMP GIT_DATE "%Y-%m-%d %H:%M:%S")
+
+#######################################################################################
 # Main Executable
 #######################################################################################
 
 add_executable(pihpsdr
     ${CORE_SOURCES}
     ${WINDOWS_SOURCES}
+    ${LIBTELNET_SOURCES}
     ${AUDIO_SOURCES}
     ${MIDI_SOURCES}
     ${USBOZY_SOURCES}
@@ -343,6 +402,13 @@ add_executable(pihpsdr
 #######################################################################################
 # Link Libraries
 #######################################################################################
+
+target_compile_definitions(pihpsdr PRIVATE
+    GIT_VERSION="${GIT_VERSION}"
+    GIT_COMMIT="${GIT_COMMIT}"
+    GIT_BRANCH="${GIT_BRANCH}"
+    GIT_DATE="${GIT_DATE}"
+)
 
 target_link_libraries(pihpsdr
     wdsp
