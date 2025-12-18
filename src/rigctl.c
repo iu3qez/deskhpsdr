@@ -35,9 +35,11 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <sys/ioctl.h>
+#ifndef _WIN32
 #include <spawn.h>
-#include <signal.h>
 #include <sys/wait.h>
+#endif
+#include <signal.h>
 #include <libgen.h>
 #ifdef __APPLE__
   #include <mach-o/dyld.h>   // Für _NSGetExecutablePath
@@ -4965,7 +4967,7 @@ gboolean parse_extended_cmd (const char *command, CLIENT *client) {
             break;
 
           case 23:  // 4x3 pad row 4 col 1, silk print: "10/F1", "no Band", default: SNB, long: MENU_NOISE
-            if (tr10) { schedule_action(SNB, PRESSED, 0); }
+            if (tr10) { schedule_action(ACT_SNB, PRESSED, 0); }
 
             if (tr12) { schedule_action(MENU_NOISE, PRESSED, 0); }
 

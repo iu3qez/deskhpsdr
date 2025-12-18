@@ -221,7 +221,7 @@ ACTION_TABLE ActionTable[] = {
   {RX2,                 "RX2",                  "RX2",          MIDI_KEY   | CONTROLLER_SWITCH},
   {SAT,                 "SAT",                  "SAT",          MIDI_KEY   | CONTROLLER_SWITCH},
   {SHUTDOWN,            "Shutdown\nOS",         "SDWN",         MIDI_KEY   | CONTROLLER_SWITCH},
-  {SNB,                 "SNB",                  "SNB",          MIDI_KEY   | CONTROLLER_SWITCH},
+  {ACT_SNB,             "SNB",                  "SNB",          MIDI_KEY   | CONTROLLER_SWITCH},
   {SPLIT,               "Split",                "SPLIT",        MIDI_KEY   | CONTROLLER_SWITCH},
   {SQUELCH,             "Squelch",              "SQUELCH",      MIDI_KNOB  | MIDI_WHEEL | CONTROLLER_ENCODER},
   {SQUELCH_RX1,         "Squelch\nRX1",         "SQUELCH1",     MIDI_KNOB  | MIDI_WHEEL | CONTROLLER_ENCODER},
@@ -1775,7 +1775,7 @@ int process_action(void *data) {
 
     break;
 
-  case SNB:
+  case ACT_SNB:
     if (a->mode == PRESSED) {
       int id = active_receiver->id;
 

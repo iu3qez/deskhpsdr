@@ -289,7 +289,7 @@ static OLD_MAPPING OLD_Mapping[] = {
   { RIT_ENABLE,           "RITTOGGLE"             },
   { RIT,                  "RITVAL"                },
   { SAT,                  "SAT"                   },
-  { SNB,                  "SNB"                   },
+  { ACT_SNB,              "SNB"                   },
   { SPLIT,                "SPLIT"                 },
   { SWAP_RX,              "SWAPRX"                },
   { A_SWAP_B,             "SWAPVFO"               },

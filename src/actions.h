@@ -22,6 +22,13 @@
 #ifndef _ACTION_H_
 #define _ACTION_H_
 
+#ifdef _WIN32
+// Undefine Windows macros that conflict with our enums
+#undef RELATIVE
+#undef ABSOLUTE
+#undef PRESSED
+#endif
+
 enum ACTION {
   NO_ACTION = 0,
   A_SWAP_B,
@@ -181,7 +188,7 @@ enum ACTION {
   RX2,
   SAT,
   SHUTDOWN,
-  SNB,
+  ACT_SNB,  // Renamed from SNB - conflicts with Windows typedef
   SPLIT,
   SQUELCH,
   SQUELCH_RX1,

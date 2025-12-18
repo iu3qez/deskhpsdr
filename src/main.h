@@ -22,6 +22,7 @@
 #ifndef _MAIN_H
 #define _MAIN_H
 
+#include <pthread.h>
 #include <sys/utsname.h>
 extern struct utsname unameData;
 
