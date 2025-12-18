@@ -145,6 +145,7 @@ endif()
 
 add_definitions(-DPORTAUDIO)
 add_definitions(-D_WIN32)
+add_definitions(-DCURL_STATICLIB)
 
 if(MIDI)
     add_definitions(-DMIDI)
