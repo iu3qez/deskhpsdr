@@ -31,9 +31,10 @@
 #endif
 
 #include "message.h"
+#include "../src/actions.h"    // Must be first - defines ACTIONtype
 #include "../src/midi_menu.h"
 #include "../src/midi.h"
-#include "../src/actions.h"
+#include "windows_midi.h"      // MIDI_DEVICE, MAX_MIDI_DEVICES
 
 /* Global MIDI variables */
 MIDI_DEVICE midi_devices[MAX_MIDI_DEVICES];

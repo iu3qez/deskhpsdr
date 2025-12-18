@@ -160,6 +160,25 @@ int cfsetispeed(struct termios *termios_p, speed_t speed);
 int cfsetospeed(struct termios *termios_p, speed_t speed);
 int cfsetspeed(struct termios *termios_p, speed_t speed);
 
+/* Modem control line constants (for ioctl TIOCM* operations) */
+#define TIOCMGET  0x5415    /* Get modem control bits */
+#define TIOCMSET  0x5418    /* Set modem control bits */
+#define TIOCMBIS  0x5416    /* Set indicated modem bits */
+#define TIOCMBIC  0x5417    /* Clear indicated modem bits */
+
+/* Modem line bit flags */
+#define TIOCM_LE   0x001    /* Line enable */
+#define TIOCM_DTR  0x002    /* Data Terminal Ready */
+#define TIOCM_RTS  0x004    /* Request To Send */
+#define TIOCM_ST   0x008    /* Secondary TXD */
+#define TIOCM_SR   0x010    /* Secondary RXD */
+#define TIOCM_CTS  0x020    /* Clear To Send */
+#define TIOCM_CAR  0x040    /* Carrier Detect */
+#define TIOCM_RNG  0x080    /* Ring Indicator */
+#define TIOCM_DSR  0x100    /* Data Set Ready */
+#define TIOCM_CD   TIOCM_CAR
+#define TIOCM_RI   TIOCM_RNG
+
 #else
 /* Unix/Linux - use system termios.h */
 #include <termios.h>

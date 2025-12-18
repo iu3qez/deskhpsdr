@@ -158,6 +158,9 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
                    void *(*start_routine)(void*), void *arg);
 int pthread_join(pthread_t thread, void **retval);
 int pthread_detach(pthread_t thread);
+void pthread_exit(void *retval);
+pthread_t pthread_self(void);
+int pthread_equal(pthread_t t1, pthread_t t2);
 
 int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr);
 int pthread_mutex_destroy(pthread_mutex_t *mutex);
@@ -202,6 +205,10 @@ int inet_aton(const char *cp, struct in_addr *inp);
 char *index(const char *s, int c);
 char *rindex(const char *s, int c);
 
+/* Thread-safe time functions */
+struct tm *gmtime_r(const time_t *timep, struct tm *result);
+struct tm *localtime_r(const time_t *timep, struct tm *result);
+
 /* String functions compatibility */
 #define bzero(ptr, size) memset(ptr, 0, size)
 
@@ -244,6 +251,21 @@ void freeifaddrs(struct ifaddrs *ifa);
 /* Andromeda hardware stubs - hardware not available on Windows */
 int andromeda_execute_button(int action, int state);
 void andromeda_execute_encoder(int action, int val);
+
+/* Process management - posix_spawn replacement using CreateProcess */
+int posix_spawn(pid_t *pid, const char *path,
+                void *file_actions, void *attrp,
+                char *const argv[], char *const envp[]);
+int kill(pid_t pid, int sig);
+pid_t waitpid(pid_t pid, int *status, int options);
+
+/* Signal constants for process management */
+#ifndef SIGTERM
+#define SIGTERM 15
+#endif
+#ifndef SIGKILL
+#define SIGKILL 9
+#endif
 
 #else
 /* Unix/Linux includes */

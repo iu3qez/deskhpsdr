@@ -11,6 +11,7 @@
 #include <windows.h>
 #include <winsock2.h>
 #include <stdarg.h>
+#include <termios.h>  /* For TIOCM* constants */
 
 /* Common ioctl commands (most are not directly applicable on Windows) */
 #ifndef FIONREAD

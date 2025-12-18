@@ -118,6 +118,19 @@ int pthread_detach(pthread_t thread) {
     return 0;
 }
 
+void pthread_exit(void *retval) {
+    (void)retval;  /* Return value not fully supported */
+    ExitThread(0);
+}
+
+pthread_t pthread_self(void) {
+    return GetCurrentThread();
+}
+
+int pthread_equal(pthread_t t1, pthread_t t2) {
+    return GetThreadId(t1) == GetThreadId(t2);
+}
+
 int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr) {
     (void)attr; // Ignored for simplicity
     InitializeCriticalSection(&mutex->cs);
@@ -484,6 +497,25 @@ char *rindex(const char *s, int c) {
     return strrchr(s, c);
 }
 
+/* Thread-safe time functions */
+struct tm *gmtime_r(const time_t *timep, struct tm *result) {
+    struct tm *tmp = gmtime(timep);
+    if (tmp && result) {
+        *result = *tmp;
+        return result;
+    }
+    return NULL;
+}
+
+struct tm *localtime_r(const time_t *timep, struct tm *result) {
+    struct tm *tmp = localtime(timep);
+    if (tmp && result) {
+        *result = *tmp;
+        return result;
+    }
+    return NULL;
+}
+
 /* Additional termios function implementations for Windows */
 
 int tcgetattr(int fd, struct termios *termios_p) {
@@ -626,6 +658,139 @@ void andromeda_execute_encoder(int action, int val) {
     (void)action;
     (void)val;
     /* No-op on Windows - Andromeda hardware not available */
+}
+
+/*
+ * Process management functions for Windows
+ * Implements POSIX-like process spawning using Windows CreateProcess API
+ */
+
+/* Global storage for process handles (simple implementation for single child process) */
+static HANDLE g_child_process_handle = NULL;
+
+int posix_spawn(pid_t *pid, const char *path,
+                void *file_actions, void *attrp,
+                char *const argv[], char *const envp[]) {
+    (void)file_actions;
+    (void)attrp;
+    (void)envp;  /* Windows inherits environment by default */
+
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    char cmdline[4096] = {0};
+    int i;
+
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    ZeroMemory(&pi, sizeof(pi));
+
+    /* Build command line from argv */
+    for (i = 0; argv[i] != NULL; i++) {
+        if (i > 0) strcat(cmdline, " ");
+        /* Add quotes if argument contains spaces */
+        if (strchr(argv[i], ' ') != NULL) {
+            strcat(cmdline, "\"");
+            strcat(cmdline, argv[i]);
+            strcat(cmdline, "\"");
+        } else {
+            strcat(cmdline, argv[i]);
+        }
+    }
+
+    /* Create the child process */
+    if (!CreateProcessA(
+            path,           /* Application name */
+            cmdline,        /* Command line */
+            NULL,           /* Process security attributes */
+            NULL,           /* Thread security attributes */
+            FALSE,          /* Don't inherit handles */
+            0,              /* Creation flags */
+            NULL,           /* Use parent's environment */
+            NULL,           /* Use parent's current directory */
+            &si,            /* Startup info */
+            &pi             /* Process information */
+        )) {
+        return -1;  /* CreateProcess failed */
+    }
+
+    /* Store the process handle for later use with kill/waitpid */
+    g_child_process_handle = pi.hProcess;
+
+    /* Return the process ID */
+    *pid = (pid_t)pi.dwProcessId;
+
+    /* Close the thread handle - we only need the process handle */
+    CloseHandle(pi.hThread);
+
+    return 0;  /* Success */
+}
+
+int kill(pid_t pid, int sig) {
+    HANDLE hProcess;
+
+    /* Try to use stored handle first */
+    if (g_child_process_handle != NULL) {
+        hProcess = g_child_process_handle;
+    } else {
+        /* Open process by PID */
+        hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, (DWORD)pid);
+        if (hProcess == NULL) {
+            return -1;
+        }
+    }
+
+    if (sig == SIGTERM || sig == SIGKILL) {
+        if (!TerminateProcess(hProcess, 1)) {
+            if (hProcess != g_child_process_handle) {
+                CloseHandle(hProcess);
+            }
+            return -1;
+        }
+    }
+    /* Other signals are ignored on Windows */
+
+    if (hProcess != g_child_process_handle) {
+        CloseHandle(hProcess);
+    }
+
+    return 0;
+}
+
+pid_t waitpid(pid_t pid, int *status, int options) {
+    (void)options;  /* WNOHANG etc. not fully implemented */
+
+    HANDLE hProcess;
+    DWORD exit_code;
+
+    /* Try to use stored handle first */
+    if (g_child_process_handle != NULL) {
+        hProcess = g_child_process_handle;
+    } else {
+        hProcess = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_INFORMATION, FALSE, (DWORD)pid);
+        if (hProcess == NULL) {
+            return -1;
+        }
+    }
+
+    /* Wait for process to terminate */
+    WaitForSingleObject(hProcess, INFINITE);
+
+    /* Get exit code if status pointer provided */
+    if (status != NULL) {
+        if (GetExitCodeProcess(hProcess, &exit_code)) {
+            *status = (int)exit_code;
+        } else {
+            *status = -1;
+        }
+    }
+
+    /* Clean up */
+    CloseHandle(hProcess);
+    if (hProcess == g_child_process_handle) {
+        g_child_process_handle = NULL;
+    }
+
+    return pid;
 }
 
 #endif /* _WIN32 */
