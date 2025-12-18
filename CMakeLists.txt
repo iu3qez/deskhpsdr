@@ -88,6 +88,8 @@ pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
 pkg_check_modules(FFTW3 REQUIRED fftw3)
 pkg_check_modules(PORTAUDIO REQUIRED portaudio-2.0)
 pkg_check_modules(OPENSSL REQUIRED openssl)
+pkg_check_modules(CURL REQUIRED libcurl)
+pkg_check_modules(JSONC REQUIRED json-c)
 
 # Add library directories for all packages (especially lib64 for OpenSSL)
 link_directories(
@@ -95,6 +97,8 @@ link_directories(
     ${FFTW3_LIBRARY_DIRS}
     ${PORTAUDIO_LIBRARY_DIRS}
     ${OPENSSL_LIBRARY_DIRS}
+    ${CURL_LIBRARY_DIRS}
+    ${JSONC_LIBRARY_DIRS}
 )
 
 if(USBOZY)
@@ -123,6 +127,8 @@ include_directories(
     ${FFTW3_INCLUDE_DIRS}
     ${OPENSSL_INCLUDE_DIRS}
     ${PORTAUDIO_INCLUDE_DIRS}
+    ${CURL_INCLUDE_DIRS}
+    ${JSONC_INCLUDE_DIRS}
 )
 
 if(USBOZY)
@@ -250,6 +256,7 @@ set(CORE_SOURCES
 
 set(WINDOWS_SOURCES
     Windows/windows_compat.c
+    Windows/windows_stubs.c
 )
 
 #######################################################################################
