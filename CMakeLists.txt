@@ -423,6 +423,8 @@ target_link_libraries(pihpsdr
     ${FFTW3_LIBRARIES}
     ${OPENSSL_LIBRARIES}
     ${PORTAUDIO_LIBRARIES}
+    ${CURL_LIBRARIES}
+    ${JSONC_LIBRARIES}
     ws2_32      # Winsock2
     winmm       # Windows Multimedia (MIDI)
     iphlpapi    # IP Helper API (getifaddrs replacement)
