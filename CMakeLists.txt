@@ -24,6 +24,7 @@ option(USBOZY "Enable USB OZY support" OFF)
 option(SOAPYSDR "Enable SoapySDR support" OFF)
 option(STEMLAB "Enable STEMlab/RedPitaya web interface" OFF)
 option(TTS "Enable Text-to-Speech" ON)
+option(CLIENT_SERVER "Enable HPSDR Server functionality" ON)
 
 # These are ALWAYS OFF on Windows
 set(GPIO OFF)
@@ -165,6 +166,10 @@ endif()
 
 if(TTS)
     add_definitions(-DTTS)
+endif()
+
+if(CLIENT_SERVER)
+    add_definitions(-DCLIENT_SERVER)
 endif()
 
 #######################################################################################
@@ -340,6 +345,17 @@ if(TTS)
 endif()
 
 #######################################################################################
+# Optional: CLIENT_SERVER
+#######################################################################################
+
+if(CLIENT_SERVER)
+    set(CLIENT_SERVER_SOURCES
+        src/client_server.c
+        src/server_menu.c
+    )
+endif()
+
+#######################################################################################
 # WDSP Library
 #######################################################################################
 
@@ -405,6 +421,7 @@ add_executable(pihpsdr
     ${SOAPYSDR_SOURCES}
     ${STEMLAB_SOURCES}
     ${TTS_SOURCES}
+    ${CLIENT_SERVER_SOURCES}
 )
 
 #######################################################################################

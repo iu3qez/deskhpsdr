@@ -401,7 +401,16 @@ extern void   open_atu_window(GtkWindow *top_window,  const char *win_title, con
 
 extern int compare_doubles(const void *a, const void *b);
 
+#ifdef CLIENT_SERVER
+  extern int radio_remote_start(void *data);
+#endif
+
 extern int optimize_for_touchscreen;
+
+//
+// Macro to flag an unimplemented client/server feature
+//
+#define CLIENT_MISSING if (radio_is_remote) { t_print("%s: TODO: CLIENT/SERVER\n", __FUNCTION__); return; }
 extern void my_combo_attach(GtkGrid *grid, GtkWidget *combo, int row, int col, int spanrow, int spancol);
 extern gboolean radio_set_bgcolor(GtkWidget *widget, gpointer data);
 
