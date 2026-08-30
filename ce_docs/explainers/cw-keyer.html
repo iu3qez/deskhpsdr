@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Il keyer CW di deskHPSDR</title>
+<style>
+:root{
+  --bg:#fbfaf8; --fg:#1a1a19; --muted:#5d5b56; --rule:#dcd8d0;
+  --card:#ffffff; --accent:#8c3a12; --accent2:#1f5c4a; --accent3:#4a3f7a;
+  --codebg:#f4f1ec; --kw:#8c3a12; --cmt:#7a776f; --str:#1f5c4a; --fn:#4a3f7a;
+  --warn:#7a4a00; --warnbg:#fdf6e7;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#16161a; --fg:#e8e6e1; --muted:#a3a09a; --rule:#33323a;
+    --card:#1e1e24; --accent:#e08a5a; --accent2:#6fc0a4; --accent3:#a99ae0;
+    --codebg:#1a1a20; --kw:#e08a5a; --cmt:#7d7a86; --str:#6fc0a4; --fn:#a99ae0;
+    --warn:#e0b060; --warnbg:#2a2318;
+  }
+}
+*{box-sizing:border-box}
+body{
+  margin:0; padding:2.5rem 1.25rem 4rem;
+  background:var(--bg); color:var(--fg);
+  font:16px/1.62 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:74ch;margin:0 auto}
+.txt{max-width:70ch}
+h1{font-size:1.85rem;line-height:1.2;margin:0 0 .3rem;letter-spacing:-.02em}
+.sub{color:var(--muted);font-size:1.02rem;margin:0 0 1.6rem;max-width:62ch}
+h2{font-size:1.22rem;margin:2.9rem 0 .7rem;letter-spacing:-.01em;padding-top:.9rem;border-top:1px solid var(--rule)}
+h3{font-size:1rem;margin:1.8rem 0 .5rem;color:var(--accent)}
+p{margin:0 0 1rem}
+dl.meta{
+  display:grid;grid-template-columns:max-content 1fr;gap:.28rem 1.1rem;
+  margin:0 0 2.2rem;padding:.9rem 1.1rem;background:var(--card);
+  border:1px solid var(--rule);border-radius:7px;font-size:.86rem
+}
+dl.meta dt{color:var(--muted);font-weight:600}
+dl.meta dd{margin:0}
+figure{margin:1.8rem 0;padding:0}
+figure svg{display:block;width:100%;height:auto;background:var(--card);border:1px solid var(--rule);border-radius:7px}
+figcaption{font-size:.82rem;color:var(--muted);margin-top:.5rem;max-width:70ch}
+pre{
+  background:var(--codebg);border:1px solid var(--rule);border-radius:6px;
+  padding:.85rem 1rem;overflow-x:auto;font-size:.815rem;line-height:1.55;margin:.8rem 0 .5rem;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace
+}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.88em}
+p code,li code,td code{background:var(--codebg);padding:.1em .35em;border-radius:3px}
+.k{color:var(--kw)}.c{color:var(--cmt);font-style:italic}.s{color:var(--str)}.f{color:var(--fn)}
+.src{font-size:.76rem;color:var(--muted);margin:0 0 1.3rem;font-family:ui-monospace,Menlo,monospace}
+table{border-collapse:collapse;width:100%;margin:1rem 0 1.4rem;font-size:.89rem}
+th,td{text-align:left;padding:.5rem .6rem;border-bottom:1px solid var(--rule);vertical-align:top}
+th{color:var(--muted);font-weight:600;font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}
+.scroll{overflow-x:auto}
+.note{
+  background:var(--warnbg);border-left:3px solid var(--warn);
+  padding:.8rem 1rem;margin:1.3rem 0;border-radius:0 5px 5px 0;font-size:.93rem;max-width:70ch
+}
+.note strong{color:var(--warn)}
+ul,ol{padding-left:1.3rem;margin:0 0 1rem;max-width:70ch}
+li{margin-bottom:.4rem}
+footer{margin-top:3.5rem;padding-top:1rem;border-top:1px solid var(--rule);font-size:.79rem;color:var(--muted)}
+.lede{font-size:1.06rem;border-left:3px solid var(--accent);padding-left:1rem;margin:0 0 1.6rem;max-width:66ch}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Il keyer CW di deskHPSDR</h1>
+<p class="sub">Chi genera gli eventi di manipolazione, chi decide se il keyer gira nella app o nella radio, e come l'uscita del keyer arriva al trasmettitore.</p>
+
+<dl class="meta">
+  <dt>Date</dt><dd>2026-08-30</dd>
+  <dt>Input shape</dt><dd>concept</dd>
+  <dt>Subject</dt><dd>Cablaggio del keyer CW interno (<code>src/iambic.c</code>) in deskhpsdr</dd>
+</dl>
+
+<p class="lede">La risposta breve alla tua domanda: <strong>oltre al MIDI c'è una sorgente sola, ed è il paddle collegato fisicamente alla radio</strong>. Non arriva via MIDI ma dentro i pacchetti di controllo del protocollo HPSDR, e viene instradato al keyer software solo quando la casella <em>«CW handled in Radio»</em> è disattivata. GPIO in questo fork non esiste più.</p>
+
+<h2>1. Quale dei due file è «il keyer»</h2>
+
+<p>Nel repo ci sono due sorgenti che producono CW, e confonderle è il primo scoglio:</p>
+
+<div class="scroll">
+<table>
+<tr><th>File</th><th>Cos'è</th><th>Ingresso</th></tr>
+<tr><td><code>src/iambic.c</code></td><td><strong>Il keyer</strong> — macchina a stati iambic A/B, bug e tasto verticale, con thread dedicato</td><td>Eventi di paddle (dot/dash, premuto/rilasciato)</td></tr>
+<tr><td><code>src/cw_engine.c</code></td><td>Motore <em>testo→CW</em>: ring buffer da 512 caratteri, <code>cw_engine_queue_text()</code></td><td>Stringhe da CAT, TCI, terminale</td></tr>
+</table>
+</div>
+
+<p>Quello che chiami «il keyer della app» è <code>iambic.c</code>. <code>cw_engine.c</code> è la parte che hai giustamente escluso — è il pezzo che converte testo in CW e che serve CAT e TCI.</p>
+
+<div class="note">
+<strong>Un dettaglio che sfugge:</strong> <code>cw_engine.h</code> espone <code>cw_engine_set_terminal()</code>. Esiste quindi una modalità «terminale CW» in cui digiti da tastiera e il testo entra nella stessa coda usata da CAT/TCI. È testo→CW come le altre, quindi fuori dal perimetro della tua domanda, ma è una terza via d'ingresso a quella coda che non passa da nessun rig esterno.
+</div>
+
+<h2>2. L'architettura in un colpo d'occhio</h2>
+
+<figure>
+<svg viewBox="0 0 880 470" role="img" aria-label="Diagramma del flusso di keying CW in deskHPSDR">
+<defs>
+<marker id="ar" markerWidth="9" markerHeight="7" refX="8.5" refY="3.5" orient="auto">
+  <polygon points="0 0, 9 3.5, 0 7" fill="currentColor"/>
+</marker>
+</defs>
+<g font-family="-apple-system,Segoe UI,Roboto,sans-serif" font-size="12.5">
+
+<text x="16" y="24" font-size="11" font-weight="700" fill="var(--muted)" letter-spacing="1.2">PRODUTTORI DI EVENTI</text>
+
+<rect x="16" y="38" width="196" height="56" rx="6" fill="var(--card)" stroke="var(--accent)" stroke-width="1.7"/>
+<text x="30" y="60" font-weight="700" fill="var(--accent)">Controller MIDI</text>
+<text x="30" y="80" font-size="11" fill="var(--muted)">midi3.c → schedule_action()</text>
+
+<rect x="16" y="112" width="196" height="70" rx="6" fill="var(--card)" stroke="var(--accent2)" stroke-width="1.7"/>
+<text x="30" y="134" font-weight="700" fill="var(--accent2)">Paddle sulla radio</text>
+<text x="30" y="152" font-size="11" fill="var(--muted)">old_protocol.c:1684</text>
+<text x="30" y="169" font-size="11" fill="var(--muted)">new_protocol.c:3458</text>
+
+<rect x="16" y="200" width="196" height="56" rx="6" fill="var(--card)" stroke="var(--rule)" stroke-width="1.4" stroke-dasharray="4 3"/>
+<text x="30" y="222" font-weight="700" fill="var(--muted)">Bottone toolbar</text>
+<text x="30" y="241" font-size="11" fill="var(--muted)">caso degenere, assegnabile</text>
+
+<g color="var(--muted)" stroke="var(--muted)" fill="none" stroke-width="1.5">
+  <path d="M212 66 L268 66 L268 140 L292 140" marker-end="url(#ar)"/>
+  <path d="M212 147 L292 147" marker-end="url(#ar)"/>
+  <path d="M212 228 L268 228 L268 154 L292 154" marker-end="url(#ar)"/>
+</g>
+
+<rect x="296" y="112" width="180" height="70" rx="6" fill="var(--card)" stroke="var(--accent3)" stroke-width="2"/>
+<text x="310" y="136" font-weight="700" fill="var(--accent3)">keyer_event()</text>
+<text x="310" y="154" font-size="11" fill="var(--muted)">iambic.c:286</text>
+<text x="310" y="171" font-size="11" fill="var(--muted)">left / state</text>
+
+<rect x="296" y="206" width="180" height="62" rx="6" fill="var(--warnbg)" stroke="var(--warn)" stroke-width="1.6"/>
+<text x="310" y="228" font-weight="700" fill="var(--warn)">gate: !cw_keyer_internal</text>
+<text x="310" y="246" font-size="11" fill="var(--muted)">«CW handled in Radio»</text>
+<text x="310" y="261" font-size="11" fill="var(--muted)">off ⇒ il keyer app gira</text>
+<g color="var(--warn)" stroke="var(--warn)" fill="none" stroke-width="1.4" stroke-dasharray="3 3">
+  <path d="M386 206 L386 182" marker-end="url(#ar)"/>
+</g>
+
+<g color="var(--muted)" stroke="var(--muted)" fill="none" stroke-width="1.5">
+  <path d="M476 147 L536 147" marker-end="url(#ar)"/>
+</g>
+
+<rect x="540" y="112" width="182" height="70" rx="6" fill="var(--card)" stroke="var(--accent3)" stroke-width="2"/>
+<text x="554" y="136" font-weight="700" fill="var(--accent3)">keyer_thread()</text>
+<text x="554" y="154" font-size="11" fill="var(--muted)">iambic.c:325 — sem_wait</text>
+<text x="554" y="171" font-size="11" fill="var(--muted)">iambic A/B, bug, straight</text>
+
+<g color="var(--muted)" stroke="var(--muted)" fill="none" stroke-width="1.5">
+  <path d="M631 182 L631 216" marker-end="url(#ar)"/>
+</g>
+
+<rect x="540" y="220" width="182" height="62" rx="6" fill="var(--codebg)" stroke="var(--rule)" stroke-width="1.4"/>
+<text x="554" y="242" font-weight="700">cw_key_down</text>
+<text x="554" y="260" font-weight="700">cw_key_up</text>
+<text x="554" y="276" font-size="11" fill="var(--muted)">conteggi di sample</text>
+
+<g color="var(--muted)" stroke="var(--muted)" fill="none" stroke-width="1.5">
+  <path d="M631 282 L631 316" marker-end="url(#ar)"/>
+</g>
+
+<rect x="540" y="320" width="182" height="70" rx="6" fill="var(--card)" stroke="var(--accent2)" stroke-width="1.7"/>
+<text x="554" y="343" font-weight="700" fill="var(--accent2)">transmitter.c:1857</text>
+<text x="554" y="361" font-size="11" fill="var(--muted)">1 decremento / sample mic</text>
+<text x="554" y="378" font-size="11" fill="var(--muted)">shaping cw_ramp_rf + audio</text>
+
+<rect x="296" y="320" width="180" height="70" rx="6" fill="var(--card)" stroke="var(--rule)" stroke-width="1.4"/>
+<text x="310" y="343" font-weight="700" fill="var(--muted)">CW_KEYER_KEYDOWN</text>
+<text x="310" y="361" font-size="11" fill="var(--muted)">actions.c:470 — scavalca</text>
+<text x="310" y="378" font-size="11" fill="var(--muted)">il keyer, scrive i contatori</text>
+<g color="var(--muted)" stroke="var(--muted)" fill="none" stroke-width="1.5" stroke-dasharray="4 3">
+  <path d="M212 66 L250 66 L250 355 L292 355" marker-end="url(#ar)"/>
+  <path d="M476 355 L536 355" marker-end="url(#ar)"/>
+</g>
+
+<rect x="16" y="320" width="196" height="70" rx="6" fill="var(--card)" stroke="var(--rule)" stroke-width="1.4" stroke-dasharray="4 3"/>
+<text x="30" y="343" font-weight="700" fill="var(--muted)">cw_engine.c</text>
+<text x="30" y="361" font-size="11" fill="var(--muted)">CAT / TCI / terminale</text>
+<text x="30" y="378" font-size="11" fill="var(--muted)">testo → CW (fuori perimetro)</text>
+
+<text x="16" y="428" font-size="11" fill="var(--muted)">Linea continua = percorso del keyer.  Tratteggiata = percorso che lo scavalca o ne è fuori.</text>
+<text x="16" y="448" font-size="11" fill="var(--muted)">GPIO: assente in questo fork — presente in piHPSDR upstream, rimosso qui.</text>
+</g>
+</svg>
+<figcaption>Tre produttori convergono su <code>keyer_event()</code>. Il gate <code>cw_keyer_internal</code> decide se il keyer software gira affatto. L'uscita non è un segnale ma una coppia di contatori consumati dal loop di trasmissione.</figcaption>
+</figure>
+
+<h2>3. Il gate: chi manipola davvero</h2>
+
+<p>Tutto ruota attorno a una variabile e a una casella nel menu CW etichettata <strong>«CW handled in Radio»</strong>:</p>
+
+<pre><span class="c">// iambic.c:268 — dentro keyer_update()</span>
+<span class="k">if</span> (cw_keyer_internal == 0) {
+  <span class="k">if</span> (!running) { <span class="f">keyer_init</span>(); }   <span class="c">// avvia il thread del keyer app</span>
+} <span class="k">else</span> {
+  <span class="k">if</span> (running)  { <span class="f">keyer_close</span>(); }  <span class="c">// lo ferma: manipola la radio</span>
+}</pre>
+<p class="src">src/iambic.c:268 · src/cw_menu.c:157</p>
+
+<p><code>keyer_update()</code> è chiamata a ogni cambio di <code>cw_keyer_speed</code>, <code>cw_keyer_weight</code>, <code>cw_keys_reversed</code> o del gate stesso, e ricalcola le lunghezze in sample:</p>
+
+<pre>dot_length  = <span class="s">1200</span> / cw_keyer_speed;             <span class="c">// ms</span>
+dot_samples = <span class="s">57600</span> / cw_keyer_speed;            <span class="c">// 48 kHz · 1200/WPM</span>
+dash_samples = (<span class="s">3456</span> * cw_keyer_weight) / cw_keyer_speed;</pre>
+<p class="src">src/iambic.c:254-256</p>
+
+<p>Il <code>3456</code> è <code>57600 · 3 / 50</code>: il rapporto dash/dot standard di 3:1 con <code>cw_keyer_weight</code> espresso in percentuale attorno a 50. Cambiare il weight sposta il rapporto senza toccare la velocità nominale.</p>
+
+<h2>4. I tre produttori, nel dettaglio</h2>
+
+<h3>a. MIDI — l'unico che passa dal layer delle action</h3>
+
+<p>Un controller MIDI genera un evento, <code>midi3.c</code> lo risolve in una <code>enum ACTION</code> tramite la tabella per nome, e chiama <code>schedule_action()</code>. Qui c'è la scelta di design più interessante del sottosistema:</p>
+
+<pre><span class="c">// actions.c:457 — schedule_action()</span>
+<span class="k">switch</span> (action) {
+<span class="k">case</span> CW_LEFT:
+<span class="k">case</span> CW_RIGHT:
+  cw_key_hit = <span class="s">1</span>;
+  <span class="f">keyer_event</span>(action == CW_LEFT, mode == PRESSED);   <span class="c">// IMMEDIATO</span>
+  <span class="k">break</span>;
+<span class="k">case</span> CW_STRAIGHT_KEY:
+  cw_key_hit = <span class="s">1</span>;
+  <span class="f">keyer_straight_event</span>(mode == PRESSED);
+  <span class="k">break</span>;
+<span class="k">default</span>:
+  <span class="c">// tutte le altre azioni: accodate nella idle queue di GTK</span>
+  <span class="f">g_idle_add</span>(process_action, a);
+  <span class="k">break</span>;
+}</pre>
+<p class="src">src/actions.c:457-495</p>
+
+<p>Le azioni CW sono le uniche a <strong>non</strong> passare da <code>g_idle_add()</code>. Il commento sopra la funzione lo dice esplicitamente: <em>«CW key actions are processed immediately»</em>. La idle queue di GTK gira quando il main loop è libero, con jitter di parecchi millisecondi — accettabile per cambiare banda, letale per la temporizzazione degli elementi Morse. A 25 WPM un dot dura 48 ms; qualche decina di ms di jitter è una manipolazione inascoltabile.</p>
+
+<h3>b. Il paddle sulla radio — quello che cercavi</h3>
+
+<p>Questa è la sorgente «in più» rispetto al MIDI, e non passa da nessuna action. Lo stato del paddle arriva nei bit del primo byte di controllo del pacchetto HPSDR, decodificato identicamente nei due protocolli:</p>
+
+<pre><span class="c">// old_protocol.c:1673 — Protocol-1</span>
+previous_dot = radio_dot;
+previous_dash = radio_dash;
+radio_dash = (control_in[<span class="s">0</span>] &gt;&gt; <span class="s">1</span>) &amp; <span class="s">0x01</span>;
+radio_dot  = (control_in[<span class="s">0</span>] &gt;&gt; <span class="s">2</span>) &amp; <span class="s">0x01</span>;
+
+<span class="c">// Stops CAT cw transmission if radio reports "CW action"</span>
+<span class="k">if</span> (radio_dash || radio_dot) {
+  CAT_cw_is_active = <span class="s">0</span>;
+  MIDI_cw_is_active = <span class="s">0</span>;
+  cw_key_hit = <span class="s">1</span>;
+}
+<span class="k">if</span> (!cw_keyer_internal) {
+  <span class="k">if</span> (radio_dash != previous_dash) { <span class="f">keyer_event</span>(<span class="s">0</span>, radio_dash); }
+  <span class="k">if</span> (radio_dot  != previous_dot)  { <span class="f">keyer_event</span>(<span class="s">1</span>, radio_dot);  }
+}</pre>
+<p class="src">src/old_protocol.c:1673-1686 · identico in src/new_protocol.c:3447-3459</p>
+
+<p>Tre cose da notare. Primo: la trasmissione a fronte (<code>!= previous_*</code>) — il protocollo riporta lo <em>stato</em> a ogni pacchetto, il keyer vuole <em>eventi</em>, quindi la conversione avviene qui. Secondo: il gate <code>!cw_keyer_internal</code> è ripetuto anche qui, non solo in <code>keyer_update()</code> — cintura e bretelle, perché il thread potrebbe essere ancora vivo durante un cambio di impostazione. Terzo: toccare il paddle azzera <code>CAT_cw_is_active</code> e <code>MIDI_cw_is_active</code>, cioè <strong>il paddle fisico ha sempre la precedenza</strong> e interrompe qualunque testo in coda.</p>
+
+<h3>c. Il bottone toolbar — presente per omissione, non per scelta</h3>
+
+<p>Il dialogo di assegnazione dei bottoni chiama <code>action_dialog_with_hide(dialog, MIDI_KEY, TYPE_HIDE_TOOLBAR, ...)</code>, e il filtro è:</p>
+
+<pre><span class="c">// action_dialog.c:78</span>
+<span class="k">if</span> (ActionTable[i].type &amp; TYPE_HIDE)  { <span class="k">continue</span>; }
+<span class="k">if</span> (ActionTable[i].type &amp; hide_flags) { <span class="k">continue</span>; }</pre>
+<p class="src">src/action_dialog.c:78-79 · src/toolbar_menu.c:145</p>
+
+<p>In tutta la <code>ActionTable</code> una sola voce porta <code>TYPE_HIDE_TOOLBAR</code>: <code>CW_STRAIGHT_KEY</code>. <code>CW_LEFT</code>, <code>CW_RIGHT</code>, <code>CW_KEYER_KEYDOWN</code> e <code>CW_KEYER_PTT</code> restano quindi assegnabili a un bottone GUI. Non è una funzione: è ciò che resta quando si esclude esplicitamente solo il caso peggiore.</p>
+
+<h2>5. L'uscita: non un segnale, due contatori</h2>
+
+<p>Il keyer non produce un livello logico. Scrive due interi che sono <strong>numeri di sample</strong>, e il loop di trasmissione li consuma:</p>
+
+<pre><span class="c">// transmitter.c:1857 — una volta per ogni sample di microfono</span>
+cw_not_ready = <span class="s">0</span>;
+<span class="k">if</span> (cw_key_down &gt; <span class="s">0</span>) {
+  cw_key_down--;
+  updown = <span class="s">1</span>;
+} <span class="k">else</span> {
+  <span class="k">if</span> (cw_key_up &gt; <span class="s">0</span>) { cw_key_up--; }
+  updown = <span class="s">0</span>;
+}</pre>
+<p class="src">src/transmitter.c:1857-1865</p>
+
+<p>Il vantaggio del disaccoppiamento è che la temporizzazione dell'elemento Morse non dipende più dallo scheduler: una volta che il keyer ha scritto «960 sample di key-down», la durata è garantita dal clock audio, non dal thread. Il thread può anche essere in ritardo — l'elemento in corso esce comunque giusto.</p>
+
+<p>Il valore <code>updown</code> non pilota un interruttore ma un puntatore dentro una rampa precalcolata, <code>cw_ramp_rf[]</code> per l'RF e <code>cw_ramp_audio[]</code> per il sidetone. È la parte che evita i click:</p>
+
+<blockquote class="txt"><em>«We HAVE TO shape the signal to avoid hard clicks to be heard way beside our frequency»</em> — commento in <code>transmitter.c:1839</code>.</blockquote>
+
+<p>Un fronte rettangolare su una portante genera uno spettro <code>sinc</code>, con code che si estendono per chilohertz. La rampa è la finestra che confina l'occupazione nella banda del segnale CW. Sidetone e RF hanno rampe distinte perché il primo deve essere gradevole all'orecchio e il secondo deve rispettare lo spettro.</p>
+
+<h2>6. Il percorso che scavalca il keyer</h2>
+
+<p>Esiste una quarta strada che non tocca <code>iambic.c</code> affatto, ed è quella per i keyer <em>esterni</em> che fanno da sé la temporizzazione:</p>
+
+<pre><span class="c">// actions.c:470 — CW_KEYER_KEYDOWN</span>
+<span class="c">// hard "key-up/down" action WITHOUT break-in</span>
+<span class="c">// intended for external keyers (MIDI or GPIO connected)</span>
+<span class="c">// which take care of PTT themselves.</span>
+<span class="k">if</span> (mode == PRESSED &amp;&amp; (!cw_keyer_internal || MIDI_cw_is_active)) {
+  cw_key_down = <span class="s">960000</span>;  <span class="c">// max. 20 sec to protect hardware</span>
+  cw_key_up = <span class="s">0</span>;
+  cw_key_hit = <span class="s">1</span>;
+} <span class="k">else</span> {
+  cw_key_down = <span class="s">0</span>;
+  cw_key_up = <span class="s">0</span>;
+}</pre>
+<p class="src">src/actions.c:470-483</p>
+
+<p>Scrive direttamente i contatori, saltando la macchina a stati. I <code>960000</code> sample sono 20 secondi a 48 kHz: un watchdog contro il tasto incollato, perché senza macchina a stati nessuno garantisce che arrivi il rilascio.</p>
+
+<div class="note">
+<strong>Reliquia da piHPSDR:</strong> il commento dice «MIDI or GPIO connected», ma in questo fork <code>src/gpio.c</code> non esiste e nessun header definisce il supporto GPIO per il keying. deskHPSDR nasce come porting macOS/Linux desktop e ha lasciato indietro la parte Raspberry Pi. Se cerchi il percorso GPIO leggendo i commenti lo cerchi a vuoto.
+</div>
+
+<h2>7. Il thread e la sua temporizzazione</h2>
+
+<p>Il keyer non fa polling: dorme su un semaforo e viene svegliato dagli eventi.</p>
+
+<pre><span class="c">// iambic.c:325</span>
+<span class="k">while</span> (running) {
+  enforce_cw_vox = <span class="s">0</span>;
+<span class="k">#ifdef</span> __APPLE__
+  <span class="f">sem_wait</span>(cw_event);        <span class="c">// semaforo con nome: macOS non ha sem_init</span>
+<span class="k">#else</span>
+  <span class="f">sem_wait</span>(&amp;cw_event);
+<span class="k">#endif</span>
+  <span class="c">// swallow any cw_events posted during the last "cw hang" time.</span>
+  <span class="k">if</span> (!kcwl &amp;&amp; !kcwr &amp;&amp; !external_straight_key) { <span class="k">continue</span>; }</pre>
+<p class="src">src/iambic.c:325-345</p>
+
+<p>La <code>#ifdef __APPLE__</code> è la conseguenza del fatto che macOS deprecò i semafori POSIX anonimi: <code>sem_init()</code> esiste ma ritorna <code>ENOSYS</code>, quindi serve <code>sem_open()</code> con un nome. Dentro il loop la temporizzazione degli elementi usa <code>clock_nanosleep()</code> in modalità assoluta — anch'essa assente su macOS e fornita da uno shim in <code>src/MacOS.h</code>.</p>
+
+<p>Vale la pena saperlo perché è codice ancora in movimento: il commit <code>328a431</code> del 2026-08-30, cioè l'HEAD attuale del fork, corregge proprio quello shim — <em>«Return immediately when the requested absolute time has already passed instead of generating an invalid relative sleep interval»</em>. Un tempo assoluto già passato produceva un intervallo relativo negativo, e quindi un'attesa sbagliata dentro la temporizzazione del keyer.</p>
+
+<h2>8. Il flag che tiene in ordine le priorità</h2>
+
+<p><code>cw_key_hit</code> compare in ogni percorso visto finora. Non è uno stato di manipolazione: è un <strong>segnale di aborto</strong> verso i motori testo→CW. <code>cw_engine.c</code> lo controlla prima di ogni singolo elemento:</p>
+
+<pre><span class="c">// cw_engine.c:51, ripetuto in ogni send_dot/send_dash/send_space</span>
+<span class="k">if</span> (cw_key_hit || cw_not_ready) { <span class="k">return</span>; }</pre>
+<p class="src">src/cw_engine.c:51-93</p>
+
+<p>Il controllo è ripetuto a ogni elemento e non una volta per carattere: se metti mano al paddle mentre la radio sta mandando un CQ da macro, la trasmissione si interrompe entro un punto, non a fine parola. È la regola implicita di ogni stazione — la mano sul tasto vince sempre sull'automatismo — realizzata come guardia in tre righe.</p>
+
+<h2>9. Il sidetone locale</h2>
+
+<p>Il keyer deve produrre un tono che <em>tu</em> senti, e la domanda non è banale perché la radio ne genera già uno per conto suo. La ragione per cui serve quello locale è operativa, non tecnica: <strong>quando il rig è fisicamente in un'altra stanza rispetto al PC</strong>, il sidetone dell'FPGA esce da un altoparlante che non è dove stai manipolando. L'unico tono utile è quello che esce dalle cuffie attaccate al computer.</p>
+
+<p>deskHPSDR genera due toni distinti, con accumulatori di fase separati:</p>
+
+<pre><span class="c">// transmitter.c:1709 — tono SPEDITO ALLA RADIO nello stream IQ</span>
+sidetone = sidevol * ramp * <span class="f">sine_generator</span>(&amp;p1radio, &amp;p2radio, cw_keyer_sidetone_frequency);
+
+<span class="c">// transmitter.c:1898 — tono LOCALE</span>
+cwsample = <span class="s">0.00196</span> * vol * val * <span class="f">sine_generator</span>(&amp;p1local, &amp;p2local, cw_keyer_sidetone_frequency);
+<span class="k">if</span> (active_receiver-&gt;local_audio) { <span class="f">cw_audio_write</span>(active_receiver, cwsample); }</pre>
+<p class="src">src/transmitter.c:1709, 1898-1915</p>
+
+<p>Gli accumulatori separati non sono ridondanza. Se i due toni condividessero lo stato di fase si contenderebbero l'avanzamento quando sono attivi entrambi, e sentiresti battimenti.</p>
+
+<h3>Un anello dedicato, non il buffer della ricezione</h3>
+
+<p>Il sidetone locale <strong>non</strong> passa dal ring audio della RX. Ha il suo (<code>rx-&gt;sidetone_buffer</code>, puntatori atomici, singolo produttore e singolo consumatore senza lock), drenato dalla stessa callback CoreAudio ma in modo indipendente, e sommato in coda su entrambi i canali:</p>
+
+<pre><span class="c">// macos_audio.c:634 — dentro la render callback</span>
+<span class="k">if</span> (st_in != st_out) {
+  sidetone = st_buffer[st_out];
+  st_out++;
+  <span class="c">// ...</span>
+}
+left  += sidetone;
+right += sidetone;</pre>
+<p class="src">src/macos_audio.c:612-645</p>
+
+<p>La separazione è ciò che permette al tono di avere una latenza propria, molto più bassa di quella della catena di ricezione, che invece è dimensionata per assorbire il jitter di rete verso la radio.</p>
+
+<h3>Il controllo di latenza, e perché macOS è un caso a parte</h3>
+
+<p>La versione ALSA riavvolge il buffer di riproduzione alla transizione RX→TX con <code>snd_pcm_rewind()</code>. CoreAudio non ha un equivalente, quindi <code>macos_audio.c</code> gestisce la latenza con un controllore esplicito:</p>
+
+<div class="scroll">
+<table>
+<tr><th>Costante</th><th>Sample</th><th>@ 48 kHz</th><th>Ruolo</th></tr>
+<tr><td><code>CW_LAT_LOW</code></td><td>128</td><td>2,67 ms</td><td>sotto questa soglia inserisce uno zero</td></tr>
+<tr><td><code>CW_LAT_TARGET</code></td><td>256</td><td><strong>5,33 ms</strong></td><td>riempimento all'avvio della TX</td></tr>
+<tr><td><code>CW_LAT_HIGH</code></td><td>384</td><td>8,0 ms</td><td>sopra questa soglia scarta un sample</td></tr>
+</table>
+</div>
+<p class="src">src/macos_audio.c:152-154</p>
+
+<p>Alla transizione RX→TX l'anello viene inizializzato <em>esattamente</em> a <code>CW_LAT_TARGET</code>, senza ereditare il riempimento del ring RX. Poi ogni 16 sample il controllore corregge la deriva fra il clock del produttore e quello del dispositivo. La finezza sta in una riga:</p>
+
+<pre><span class="c">// macos_audio.c:1132</span>
+<span class="k">if</span> (sample != <span class="s">0.0f</span>) { count = <span class="s">0</span>; }   <span class="c">// il contatore si azzera sul tono</span></pre>
+
+<p>Il contatore che abilita le correzioni si azzera a ogni sample non nullo. Le correzioni possono quindi scattare <strong>solo nei silenzi fra gli elementi</strong>, mai dentro un dot o un dash. È un trucco che vale la pena rubare: invece di rendere le correzioni più piccole, le sposta dove sono inudibili.</p>
+
+<div class="note">
+<strong>Il buffer CoreAudio, e perché è già stretto.</strong> L'AudioUnit non vive in <code>macos_audio.c</code> (che gestisce solo gli anelli) ma in <code>coreaudio.c</code>, dove <code>coreaudio_tune_buffer_frames()</code> interroga <code>kAudioDevicePropertyBufferFrameSizeRange</code>, clampa la richiesta e imposta <code>kAudioDevicePropertyBufferFrameSize</code>. Il target in uscita è <code>COREAUDIO_OUTPUT_BUFFER_TARGET 128</code> (<code>coreaudio.c:39</code>), cioè <strong>2,67 ms</strong> a 48 kHz — valore da DAW, non default di sistema. Il totale realistico del sidetone locale è quindi <code>5,33 ms</code> di anello più <code>2,67 ms</code> di buffer più la latenza del DAC: <strong>circa 9-11 ms</strong>, nella stessa fascia del sidetone generato dalla radio via P2 (17 ms misurati su ANAN-7000, <code>new_protocol.c:3535</code>). La dimensione è una proprietà del <em>device</em>, non del client: 128 è una scelta deliberatamente educata, perché scendere più giù la imporrebbe a tutto ciò che suona sullo stesso dispositivo.
+</div>
+
+<h3>Due vincoli strutturali</h3>
+
+<p>Il primo: tutto il blocco vive dentro <code>if ((txmode == modeCWL || txmode == modeCWU) &amp;&amp; radio_is_transmitting())</code>. Il sidetone <strong>non esiste prima che il TX sia effettivamente su</strong>, quindi sul primo elemento in break-in si somma l'intera transizione RX→TX, round trip verso la radio incluso. Dal secondo elemento in poi la TX è già attiva e conta solo la latenza audio.</p>
+
+<p>Il secondo: la generazione locale è condizionata a <code>active_receiver-&gt;local_audio</code>. Se l'ascolto passa dall'uscita audio della radio anziché dal computer, la app non produce alcun tono — e in quella configurazione è corretto così, perché il tono lo fa l'FPGA.</p>
+
+<p>Le due cose si incastrano con il gate della sezione 3. Con <code>cw_keyer_internal</code> attivo la app spedisce silenzio e lascia fare all'hardware:</p>
+
+<pre><span class="c">// transmitter.c:1930</span>
+<span class="k">if</span> (!cw_keyer_internal || CAT_cw_is_active) { s = (<span class="k">int</span>)(cwsample * <span class="s">32768.0</span>); }
+<span class="f">new_protocol_cw_audio_samples</span>(s, s);   <span class="c">// s == 0 se il keyer sta nella radio</span></pre>
+
+<p>Quindi la scelta non è fra due implementazioni dello stesso tono, ma fra due <em>posizioni</em>: sidetone nell'FPGA quando sei accanto alla radio, sidetone nella app quando la radio è altrove. La latenza è il prezzo della seconda, e i 5,33 ms di anello sono lo sforzo di tenerlo basso.</p>
+
+<h2>Riepilogo</h2>
+
+<div class="scroll">
+<table>
+<tr><th>Sorgente</th><th>Percorso</th><th>Passa dal keyer?</th><th>Gate</th></tr>
+<tr><td>Controller MIDI (paddle)</td><td><code>midi3.c</code> → <code>schedule_action</code> → <code>keyer_event</code></td><td>Sì</td><td>—</td></tr>
+<tr><td>Paddle sulla radio</td><td><code>control_in[0]</code> bit 1-2 → <code>keyer_event</code></td><td>Sì</td><td><code>!cw_keyer_internal</code></td></tr>
+<tr><td>Bottone toolbar</td><td><code>toolbar.c</code> → <code>schedule_action</code></td><td>Sì</td><td>—</td></tr>
+<tr><td>Keyer esterno via MIDI</td><td><code>CW_KEYER_KEYDOWN</code> → contatori</td><td>No, scavalca</td><td><code>!cw_keyer_internal || MIDI_cw_is_active</code></td></tr>
+<tr><td>CAT / TCI / terminale</td><td><code>cw_engine.c</code> → contatori</td><td>No, fuori perimetro</td><td>abortito da <code>cw_key_hit</code></td></tr>
+<tr><td>GPIO</td><td colspan="3">Non esiste in questo fork. Solo commenti residui da piHPSDR.</td></tr>
+</table>
+</div>
+
+<p>Se dovessi aggiungere una sorgente di manipolazione — per esempio una seriale, o un'interfaccia di rete — il punto d'innesto corretto è <code>keyer_event(left, state)</code> con conversione a fronte a monte, non i contatori. I contatori sono per chi ha già la propria temporizzazione.</p>
+
+<footer>Composed 2026-08-30 by ce-explain · deskhpsdr @ 9f30362</footer>
+
+</div>
+</body>
+</html>

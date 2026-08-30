@@ -59,3 +59,5 @@ Brick-Tools/p2_discover
 *.zip
 MacOS/build-*.sh
 
+# Compound Engineering local scratch
+.context/compound-engineering/
