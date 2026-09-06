@@ -1135,6 +1135,92 @@ static long long panadapter_next_divisor(long long divisor) {
 }
 
 
+static long long panadapter_frequency_divisor(double hz_per_pixel) {
+  long long divisor = (long long)(hz_per_pixel * 65.0);
+  if (divisor > 500000LL) { divisor = 1000000LL; }
+  else if (divisor > 200000LL) { divisor = 500000LL; }
+  else if (divisor > 100000LL) { divisor = 200000LL; }
+  else if (divisor >  50000LL) { divisor = 100000LL; }
+  else if (divisor >  20000LL) { divisor =  50000LL; }
+  else if (divisor >  10000LL) { divisor =  20000LL; }
+  else if (divisor >   5000LL) { divisor =  10000LL; }
+  else if (divisor >   2000LL) { divisor =   5000LL; }
+  else if (divisor >   1000LL) { divisor =   2000LL; }
+  else if (divisor >    500LL) { divisor =   1000LL; }
+  else if (divisor >    200LL) { divisor =    500LL; }
+  else if (divisor >    100LL) { divisor =    200LL; }
+  else if (divisor >     50LL) { divisor =    100LL; }
+  else if (divisor >     20LL) { divisor =     50LL; }
+  else if (divisor >     10LL) { divisor =     20LL; }
+  else if (divisor >      5LL) { divisor =     10LL; }
+  else if (divisor >      2LL) { divisor =      5LL; }
+  else if (divisor >      1LL) { divisor =      2LL; }
+  else { divisor = 1LL; }
+  const double min_marker_px = 40.0;
+  while ((double)divisor / hz_per_pixel < min_marker_px) {
+    divisor = panadapter_next_divisor(divisor);
+  }
+  return divisor;
+}
+
+void rx_panadapter_draw_frequency_markers(const RECEIVER *rx, cairo_t *cr, int width, double y) {
+  if (rx == NULL || cr == NULL || width <= 0 || rx->sample_rate <= 0 || rx->zoom <= 0) {
+    return;
+  }
+  const int vfo_id = rx_panadapter_effective_vfo_id(rx);
+  const int mode = vfo[vfo_id].mode;
+  long long frequency = vfo[vfo_id].frequency;
+  const double hz_per_pixel = (double)rx->sample_rate / ((double)width * rx->zoom);
+  const long long half = (long long)rx->sample_rate / 2LL;
+  if (mode == modeCWU) {
+    frequency -= cw_keyer_sidetone_frequency;
+  } else if (mode == modeCWL) {
+    frequency += cw_keyer_sidetone_frequency;
+  }
+  const double min_display = (double)frequency - (double)half + ((double)rx->pan * hz_per_pixel);
+  const double max_display = min_display + ((double)width * hz_per_pixel);
+  const long long divisor = panadapter_frequency_divisor(hz_per_pixel);
+  const int marker_distance = (width * divisor) / rx->sample_rate;
+  const int marker_extra = (marker_distance > 100) ? 2 : 0;
+  long long f = ((long long)floor(min_display / (double)divisor) * divisor) + divisor;
+  char text[32];
+  cairo_save(cr);
+  if (active_receiver == rx) {
+    cairo_set_source_rgba(cr, COLOUR_PAN_LINE);
+  } else {
+    cairo_set_source_rgba(cr, COLOUR_PAN_LINE_WEAK);
+  }
+  cairo_set_line_width(cr, PAN_LINE_THIN);
+  cairo_select_font_face(cr, DISPLAY_FONT_BOLD, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+  cairo_set_font_size(cr, DISPLAY_FONT_SIZE12 + marker_extra);
+  while (f < max_display) {
+    const double x = ((double)f - min_display) / hz_per_pixel;
+    cairo_move_to(cr, x, y);
+    cairo_line_to(cr, x, y + 5.0);
+    cairo_stroke(cr);
+    if ((f >= min_display + divisor / 2) && (f <= max_display - divisor / 2)) {
+      if (f > 10000000000LL && marker_distance < 80) {
+        snprintf(text, sizeof(text), "...%03lld.%03lld", (f / 1000000) % 1000, (f % 1000000) / 1000);
+      } else {
+        snprintf(text, sizeof(text), "%0lld.%03lld", f / 1000000, (f % 1000000) / 1000);
+      }
+      cairo_text_extents_t extents;
+      cairo_text_extents(cr, text, &extents);
+      cairo_move_to(cr, x - (extents.width / 2.0), y + 16.0 + marker_extra);
+      cairo_text_path(cr, text);
+      cairo_save(cr);
+      cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
+      cairo_set_line_width(cr, 2.0);
+      cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+      cairo_stroke_preserve(cr);
+      cairo_restore(cr);
+      cairo_fill(cr);
+    }
+    f += divisor;
+  }
+  cairo_restore(cr);
+}
+
 static void rx_panadapter_grid_cache_paint(RECEIVER *rx,
     cairo_t *target,
     int width,
@@ -1198,32 +1284,7 @@ static void rx_panadapter_grid_cache_paint(RECEIVER *rx,
       }
       cairo_set_line_width(cr, PAN_LINE_THIN);
       cairo_stroke(cr);
-      long long divisor = (long long)(hz_per_pixel * 65.0);
-      if (divisor > 500000LL) { divisor = 1000000LL; }
-      else if (divisor > 200000LL) { divisor = 500000LL; }
-      else if (divisor > 100000LL) { divisor = 200000LL; }
-      else if (divisor >  50000LL) { divisor = 100000LL; }
-      else if (divisor >  20000LL) { divisor =  50000LL; }
-      else if (divisor >  10000LL) { divisor =  20000LL; }
-      else if (divisor >   5000LL) { divisor =  10000LL; }
-      else if (divisor >   2000LL) { divisor =   5000LL; }
-      else if (divisor >   1000LL) { divisor =   2000LL; }
-      else if (divisor >    500LL) { divisor =   1000LL; }
-      else if (divisor >    200LL) { divisor =    500LL; }
-      else if (divisor >    100LL) { divisor =    200LL; }
-      else if (divisor >     50LL) { divisor =    100LL; }
-      else if (divisor >     20LL) { divisor =     50LL; }
-      else if (divisor >     10LL) { divisor =     20LL; }
-      else if (divisor >      5LL) { divisor =     10LL; }
-      else if (divisor >      2LL) { divisor =      5LL; }
-      else if (divisor >      1LL) { divisor =      2LL; }
-      else { divisor = 1LL; }
-      const double min_marker_px = 40.0;
-      double marker_px = (double) divisor / hz_per_pixel;
-      while (marker_px < min_marker_px) {
-        divisor = panadapter_next_divisor(divisor);
-        marker_px = (double) divisor / hz_per_pixel;
-      }
+      long long divisor = panadapter_frequency_divisor(hz_per_pixel);
       int marker_distance = (width * divisor) / rx->sample_rate;
       long long f = ((long long) floor(min_display / (double) divisor) * divisor) + divisor;
       cairo_select_font_face(cr, DISPLAY_FONT_BOLD, CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);

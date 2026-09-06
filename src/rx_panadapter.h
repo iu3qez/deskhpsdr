@@ -40,6 +40,7 @@ void pan_add_dx_spot_source(double freq_khz, const char *dxcall, PAN_SPOT_SOURCE
 void rx_panadapter_peak_hold_clear(RECEIVER *rx);
 void rx_panadapter_update(RECEIVER* rx);
 void rx_panadapter_init(RECEIVER *rx, int width, int height);
+void rx_panadapter_draw_frequency_markers(const RECEIVER *rx, cairo_t *cr, int width, double y);
 void display_panadapter_messages(cairo_t *cr, int width, unsigned int fps);
 void rx_update_mnf_from_gui(RECEIVER *rx);
 void rx_update_mnf_run_from_gui(RECEIVER *rx);

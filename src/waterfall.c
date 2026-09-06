@@ -553,6 +553,16 @@ waterfall_draw_cb(GtkWidget *widget,
   //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
   gdk_cairo_set_source_pixbuf(cr, rx->pixbuf, 0, 0);
   cairo_paint(cr);  // vor dem Zeichnen der Box aufrufen, sinst wird der pixbuf überschrieben !
+  /* The panadapter normally carries the frequency scale.  When it is hidden,
+   * keep the waterfall self-referencing by drawing only the frequency ticks
+   * and labels here.  Do not draw the panadapter grid into the waterfall. */
+  if (!rx->display_panadapter) {
+    int marker_y = rx->display_3d ? (b_height * 40) / 100 : 0;
+    if (b_height - marker_y < 24) {
+      marker_y = 0;
+    }
+    rx_panadapter_draw_frequency_markers(rx, cr, b_width, marker_y);
+  }
   /* Keep the RX frequency reference visible in the conventional 2D
    * waterfall.  Match the panadapter cursor geometry (including CTUN/RIT and
    * the CW sidetone displacement), but deliberately do not draw through the
