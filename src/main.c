@@ -103,6 +103,8 @@ int log_debug = 0;
 int ui_debug = 0;
 int freq_bgcolor_alter = 0;
 
+int brick_ddc0_fix = 0;
+
 int sertune_ptt_hold_ms = 0;
 int sertune_invert = 1;
 

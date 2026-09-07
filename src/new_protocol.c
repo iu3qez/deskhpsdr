@@ -1589,6 +1589,14 @@ static void new_protocol_high_priority(void) {
     high_priority_buffer_to_radio[14] = (phase >> 16) & 0xFF;
     high_priority_buffer_to_radio[15] = (phase >>  8) & 0xFF;
     high_priority_buffer_to_radio[16] = (phase) & 0xFF;
+  } else if (xmit && device == NEW_DEVICE_HERMES && brick_ddc0_fix) {
+    //
+    // Brick P2 requires the DDC0 frequency context to follow the TX/DUC
+    // frequency during transmit, even when PureSignal is disabled.  Without
+    // this, cross-band operation with RX2 as the TX VFO can produce no RF.
+    // DDC0 remains disabled here; only its frequency word is updated.
+    //
+    p2_write_ddc_frequency_word(high_priority_buffer_to_radio, 0, DUCfrequency);
   }
   //
   // DUC frequency and drive level

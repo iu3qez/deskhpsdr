@@ -1348,6 +1348,7 @@ void StartConfigSave(void) {
   SetPropI0("sertune_ptt_hold_ms", sertune_ptt_hold_ms);
   SetPropI0("sertune_invert", sertune_invert);
   SetPropI0("p2_angelia_ddc0_map", p2_angelia_ddc0_map);
+  SetPropI0("brick_ddc0_fix", brick_ddc0_fix);
   SetPropS0("radio_host", ipaddr_radio);
   SetPropI0("radio_port", radio_port);
   SetPropI0("enable_protocol_1", enable_protocol_1);
@@ -1381,6 +1382,7 @@ void StartConfigLoad(void) {
   GetPropI0("sertune_ptt_hold_ms", sertune_ptt_hold_ms);
   GetPropI0("sertune_invert", sertune_invert);
   GetPropI0("p2_angelia_ddc0_map", p2_angelia_ddc0_map);
+  GetPropI0("brick_ddc0_fix", brick_ddc0_fix);
   const char *radio_host = getProperty("radio_host");
   if (radio_host) {
     g_strlcpy(ipaddr_radio, radio_host, IPADDR_LEN);
@@ -1419,6 +1421,9 @@ void StartConfigLoad(void) {
   }
   if (ui_debug < 0 || ui_debug > 1) {
     ui_debug = 0;
+  }
+  if (brick_ddc0_fix < 0 || brick_ddc0_fix > 1) {
+    brick_ddc0_fix = 0;
   }
   if (sertune_ptt_hold_ms < 0) {
     sertune_ptt_hold_ms = 500;

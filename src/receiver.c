@@ -1938,9 +1938,20 @@ void rx_set_analyzer(const RECEIVER *rx) {
           rx->zoom, rx->sample_rate);
 }
 
+void rx_begin_off(const RECEIVER *rx) {
+  // Start receiver slew-down without waiting for the WDSP flush.
+  SetChannelState(rx->id, 0, 0);
+}
+
+void rx_wait_off(const RECEIVER *rx) {
+  // Complete a previously started receiver shutdown.
+  WaitChannelFlush(rx->id, 100);
+}
+
 void rx_off(const RECEIVER *rx) {
-  // switch receiver OFF, wait until slew-down completet
-  SetChannelState(rx->id, 0, 1);
+  // Synchronous single-receiver shutdown for existing callers.
+  rx_begin_off(rx);
+  rx_wait_off(rx);
 }
 
 void rx_on(const RECEIVER *rx) {

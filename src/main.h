@@ -49,6 +49,8 @@ extern int log_debug;
 extern int ui_debug;
 extern int freq_bgcolor_alter;
 
+extern int brick_ddc0_fix;
+
 extern int sertune_ptt_hold_ms;
 extern int sertune_invert;
 

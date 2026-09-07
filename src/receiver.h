@@ -379,6 +379,8 @@ extern long long rx_get_mode_dc_offset(int id);
 extern long long rx_get_digi_monitor_offset(int id);
 extern void   rx_frequency_changed(RECEIVER *rx);
 extern void   rx_mode_changed(RECEIVER *rx);
+extern void   rx_begin_off(const RECEIVER *rx);
+extern void   rx_wait_off(const RECEIVER *rx);
 extern void   rx_off(const RECEIVER *rx);
 extern void   rx_on(const RECEIVER *rx);
 extern void   rx_reconfigure(RECEIVER *rx, int height);

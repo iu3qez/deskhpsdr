@@ -1984,13 +1984,15 @@ static void rxtx(int state) {
     if (rx_feedback) { rx_feedback->samples = 0; }
     if (tx_feedback) { tx_feedback->samples = 0; }
     if (!duplex) {
+      // Start all WDSP receiver slew-downs first so they can run in parallel.
+      // Do not proceed until every receiver has completed its flush.
       for (i = 0; i < receivers; i++) {
-        // Delivery of RX samples
-        // to WDSP via fexchange0() may come to an abrupt stop
-        // (especially with PureSignal or DIVERSITY).
-        // Therefore, wait for *all* receivers to complete
-        // their slew-down before going TX.
-        rx_off(receiver[i]);
+        rx_begin_off(receiver[i]);
+      }
+      for (i = 0; i < receivers; i++) {
+        rx_wait_off(receiver[i]);
+      }
+      for (i = 0; i < receivers; i++) {
         receiver[i]->displaying = 0;
         rx_set_displaying(receiver[i]);
         g_object_ref((gpointer) receiver[i]->panel);
@@ -2348,13 +2350,14 @@ void radio_set_tune(int state) {
     schedule_high_priority();
     if (state) {
       if (!duplex) {
+        // Start all WDSP receiver slew-downs first, then wait for all of them.
         for (int i = 0; i < receivers; i++) {
-          // Delivery of RX samples
-          // to WDSP via fexchange0() may come to an abrupt stop
-          // (especially with PureSignal or DIVERSITY)
-          // Therefore, wait for *all* receivers to complete
-          // their slew-down before going TX.
-          rx_off(receiver[i]);
+          rx_begin_off(receiver[i]);
+        }
+        for (int i = 0; i < receivers; i++) {
+          rx_wait_off(receiver[i]);
+        }
+        for (int i = 0; i < receivers; i++) {
           receiver[i]->displaying = 0;
           rx_set_displaying(receiver[i]);
           schedule_high_priority();
