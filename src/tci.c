@@ -63,6 +63,7 @@
 #include "noise_menu.h"
 #include "receiver.h"
 #include "rx_panadapter.h"
+#include "tci_spectrum.h"
 #include "new_protocol.h"
 #include "tx_off.h"
 
@@ -135,6 +136,11 @@ typedef struct _tci_spectrum_snapshot {
   int valid;              // 1 once a complete snapshot has been taken
 } TCI_SPECTRUM_SNAPSHOT;
 
+//
+// Frame rate a client gets when spectrum_start carries no fps argument (R3).
+//
+#define TCI_SPECTRUM_DEFAULT_FPS 10
+
 static gint tci_spectrum_clients = 0;
 static TCI_SPECTRUM_SNAPSHOT tci_spectrum_snapshot[TCI_RX_AUDIO_MAX_RECEIVERS];
 static int tci_spectrum_displaying[TCI_RX_AUDIO_MAX_RECEIVERS];
@@ -173,6 +179,26 @@ typedef struct _client {
   int iq_stream_enabled[TCI_RX_AUDIO_MAX_RECEIVERS];
   double iq_cw_phase[TCI_RX_AUDIO_MAX_RECEIVERS];
   int iq_sample_rate;
+  //
+  // Spectrum extension, per receiver (U3).  Everything below is written and
+  // read under tci_mutex, the slot included: the producer runs on the GTK
+  // display thread and the writable callback on the lws thread.
+  //
+  int spectrum_enabled[TCI_RX_AUDIO_MAX_RECEIVERS];        // 1 = subscribed
+  int spectrum_bins_req[TCI_RX_AUDIO_MAX_RECEIVERS];       // negotiated bin count
+  int spectrum_bins_eff[TCI_RX_AUDIO_MAX_RECEIVERS];       // K of the last frame
+  int spectrum_fps_req[TCI_RX_AUDIO_MAX_RECEIVERS];        // fps asked for
+  int spectrum_fps_eff[TCI_RX_AUDIO_MAX_RECEIVERS];        // fps actually served
+  unsigned int spectrum_phase[TCI_RX_AUDIO_MAX_RECEIVERS]; // display cycle counter
+  long long spectrum_req_low[TCI_RX_AUDIO_MAX_RECEIVERS];  // 0,0 = full span
+  long long spectrum_req_high[TCI_RX_AUDIO_MAX_RECEIVERS];
+  long long spectrum_eff_low[TCI_RX_AUDIO_MAX_RECEIVERS];  // span of the last frame
+  long long spectrum_eff_high[TCI_RX_AUDIO_MAX_RECEIVERS];
+  int spectrum_have_span[TCI_RX_AUDIO_MAX_RECEIVERS];      // 1 once a frame was built
+  guint32 spectrum_seq[TCI_RX_AUDIO_MAX_RECEIVERS];        // restarts at spectrum_start
+  unsigned char *spectrum_slot[TCI_RX_AUDIO_MAX_RECEIVERS];   // coalescing slot (KTD4)
+  size_t spectrum_slot_len[TCI_RX_AUDIO_MAX_RECEIVERS];       // 0 = slot empty
+  guint32 spectrum_slot_replaced[TCI_RX_AUDIO_MAX_RECEIVERS]; // U4 reads this
   int idle_queued;              // counter
   struct lws *wsi;              // libwebsockets connection
   GQueue *lws_tx_queue;         // queued RESPONSE objects for LWS writable callback
@@ -391,6 +417,7 @@ static void tci_send_iq_stream_start(CLIENT *client, int receiver_id);
 static void tci_send_iq_stream_stop(CLIENT *client, int receiver_id);
 static int tci_queue_frame(CLIENT *client, int type, const char *msg, int check_running);
 static GList *tci_clients_snapshot(void);
+static const char *tci_cmd_name(const char *lowercase, const char *uppercase);
 static void tci_cw_macros_empty(void);
 static void tci_rtty_buffer_empty(void);
 
@@ -457,6 +484,12 @@ void tci_send_stop_and_flush(void) {
       for (int i = 0; i < TCI_RX_AUDIO_MAX_RECEIVERS; i++) {
         client->iq_stream_enabled[i] = 0;
         client->iq_cw_phase[i] = 0.0;
+        //
+        // tci_spectrum_clients is zeroed a few lines below, so the per-client
+        // flags have to go with it or the two would drift apart.
+        //
+        client->spectrum_enabled[i] = 0;
+        client->spectrum_slot_len[i] = 0;
       }
       (void) tci_queue_frame(client, opTEXT, "stop;", 0);
     }
@@ -499,6 +532,8 @@ void shutdown_tci(void) {
         client->txsensor = 0;
         for (int i = 0; i < TCI_RX_AUDIO_MAX_RECEIVERS; i++) {
           client->iq_stream_enabled[i] = 0;
+          client->spectrum_enabled[i] = 0;
+          client->spectrum_slot_len[i] = 0;
         }
         (void) tci_queue_frame(client, opTEXT, "stop;", 0);
         client->running = 0;
@@ -756,32 +791,308 @@ void tci_rx_iq_block(RECEIVER *rx, const double *iq, guint frames) {
 }
 
 //
-// U3 fills this in: per-client decimation, quantization and slot enqueue.
+// Local display rate of a receiver. rx_set_displaying() keeps the cached copy
+// current; the fallback covers the window before the first call of that
+// function, when the cache is still zero.
+//
+static int tci_spectrum_display_rate(int rx_id) {
+  int fps = 0;
+
+  if (rx_id < 0 || rx_id >= TCI_RX_AUDIO_MAX_RECEIVERS) { return 0; }
+
+  fps = tci_spectrum_display_fps[rx_id];
+
+  if (fps <= 0 && rx_id < receivers && receiver[rx_id] != NULL) {
+    fps = receiver[rx_id]->fps;
+  }
+
+  return fps > 0 ? fps : 0;
+}
+
+//
+// Effective frame rate of a subscription (KTD5, R10).
+//
+// The producer runs once per display cycle and sends every
+// display_fps / fps_eff-th of them, so fps_eff must divide display_fps
+// exactly: the largest divisor of display_fps not above the request. With a
+// display rate of 30, a request of 20 therefore becomes 15, not 20.
+// A display rate of zero means "rate not known yet"; the request is kept as
+// is and the producer falls back to one frame per cycle.
+//
+// The adaptive 20->10->5 ladder of R4 is U4's business and is not here: this
+// function only implements the static ceiling.
+//
+static int tci_spectrum_fps_step(int requested, int display_fps) {
+  int want;
+  int d;
+
+  if (requested < 1) { requested = 1; }
+
+  if (display_fps <= 0) { return requested; }
+
+  want = (requested < display_fps) ? requested : display_fps;
+
+  for (d = want; d > 1; d--) {
+    if ((display_fps % d) == 0) { return d; }
+  }
+
+  return 1;
+}
+
+//
+// Number of display cycles between two frames of a subscription.
+//
+static int tci_spectrum_divisor(int fps_eff, int display_fps) {
+  if (fps_eff <= 0 || display_fps <= fps_eff) { return 1; }
+
+  return display_fps / fps_eff;
+}
+
+//
+// True when at least one receiver slot of this client holds a frame.
+// The caller holds tci_mutex.
+//
+static int tci_spectrum_slot_pending(const CLIENT *client) {
+  if (client == NULL) { return 0; }
+
+  for (int i = 0; i < TCI_RX_AUDIO_MAX_RECEIVERS; i++) {
+    if (client->spectrum_slot_len[i] != 0) { return 1; }
+  }
+
+  return 0;
+}
+
+//
+// Send one text message to every client subscribed to this receiver. Clients
+// which never subscribed get nothing at all (R1).
+//
+static void tci_spectrum_send_to_subscribers(int rx_id, const char *msg) {
+  GList *clients = tci_clients_snapshot();
+
+  for (GList *l = clients; l != NULL; l = l->next) {
+    CLIENT *client = (CLIENT *) l->data;
+
+    if (client != NULL && client->running && client->spectrum_enabled[rx_id]) {
+      tci_send_text(client, msg);
+    }
+  }
+
+  g_list_free(clients);
+}
+
+//
+// Per-client decimation, quantization and slot write.
 //
 // It is reached from tci_rx_spectrum_deliver(), that is AFTER
 // rx_update_display() has released rx->display_mutex, so it is free to take
 // tci_mutex and to talk to lws. It must never be called with display_mutex
 // held: that is the whole reason the copy and the delivery are two hooks.
 //
+// The snapshot itself needs no lock of its own: it is written by the GTK
+// thread inside display_mutex and read here on that same GTK thread, since
+// rx_update_display() calls both hooks in sequence. tci_mutex is taken only
+// around the per-client state, the slot write and the wakeup flag, never
+// around the decimation, which is the expensive part.
+//
 static void tci_spectrum_snapshot_ready(int rx_id) {
-  (void) rx_id;
+  const TCI_SPECTRUM_SNAPSHOT *snap;
+  GList *clients;
+  float values[TCI_SPECTRUM_MAX_BINS];
+  uint8_t bins[TCI_SPECTRUM_MAX_BINS];
+  int64_t avail_low;
+  int64_t avail_high;
+  int display_fps;
+  int woke_lws = 0;
+
+  if (rx_id < 0 || rx_id >= TCI_RX_AUDIO_MAX_RECEIVERS) { return; }
+
+  snap = &tci_spectrum_snapshot[rx_id];
+
+  if (!snap->valid || snap->count <= 0 || snap->hz_per_pixel <= 0.0) { return; }
+
+  avail_low = (int64_t) snap->low_hz;
+  avail_high = avail_low + (int64_t)(((double) snap->count * snap->hz_per_pixel) + 0.5);
+
+  if (avail_high <= avail_low) { return; }
+
+  display_fps = tci_spectrum_display_rate(rx_id);
+  clients = tci_clients_snapshot();
+
+  for (GList *l = clients; l != NULL; l = l->next) {
+    CLIENT *client = (CLIENT *) l->data;
+    TCI_SPECTRUM_SPAN span;
+    TCI_SPECTRUM_PREFIX prefix;
+    long long req_low;
+    long long req_high;
+    unsigned int phase;
+    size_t nbins;
+    size_t frame_len;
+    int bins_req;
+    int divisor;
+
+    if (client == NULL || !client->running) { continue; }
+
+    g_mutex_lock(&tci_mutex);
+
+    if (!client->spectrum_enabled[rx_id]) {
+      g_mutex_unlock(&tci_mutex);
+      continue;
+    }
+
+    // clamped again here so "values" and "bins" cannot be overrun whatever
+    // path wrote spectrum_bins_req
+    bins_req = (int) tci_spectrum_clamp_bins(client->spectrum_bins_req[rx_id]);
+    req_low = client->spectrum_req_low[rx_id];
+    req_high = client->spectrum_req_high[rx_id];
+    divisor = tci_spectrum_divisor(client->spectrum_fps_eff[rx_id], display_fps);
+    phase = client->spectrum_phase[rx_id]++;
+    g_mutex_unlock(&tci_mutex);
+
+    // not this client's turn in the display cycle
+    if (divisor > 1 && (phase % (unsigned int) divisor) != 0) { continue; }
+
+    if (!tci_spectrum_select_span(avail_low, avail_high, snap->hz_per_pixel,
+                                  (size_t) snap->count,
+                                  (int64_t) req_low, (int64_t) req_high, &span)) {
+      // empty, inverted or disjoint request: no frame at all (R5)
+      continue;
+    }
+
+    nbins = tci_spectrum_decimate(snap->pixels, span.i0, span.i1,
+                                  (size_t) bins_req, values);
+
+    if (nbins == 0) { continue; }
+
+    //
+    // soffset is the same dB correction the local panadapter applies, so the
+    // client sees calibrated dBm and the same floor as the local trace (R2).
+    //
+    for (size_t i = 0; i < nbins; i++) {
+      values[i] += (float) snap->soffset;
+    }
+
+    prefix.version = TCI_SPECTRUM_VERSION;
+    prefix.flags = span.flags;
+    prefix.seq = 0;
+    prefix.low_hz = span.low_hz;
+    prefix.high_hz = span.high_hz;
+    prefix.floor_db = tci_spectrum_floor_db(values, nbins);
+    prefix.scale_db = TCI_SPECTRUM_SCALE_DB;
+    tci_spectrum_quantize(values, nbins, prefix.floor_db, bins);
+    g_mutex_lock(&tci_mutex);
+
+    if (!client->spectrum_enabled[rx_id] || !client->running || client->wsi == NULL) {
+      g_mutex_unlock(&tci_mutex);
+      continue;
+    }
+
+    if (client->spectrum_slot[rx_id] == NULL) {
+      client->spectrum_slot[rx_id] = g_malloc(TCI_SPECTRUM_FRAME_MAX_BYTES);
+      client->spectrum_slot_len[rx_id] = 0;
+    }
+
+    prefix.seq = client->spectrum_seq[rx_id]++;
+    frame_len = tci_spectrum_serialize(client->spectrum_slot[rx_id],
+                                       TCI_SPECTRUM_FRAME_MAX_BYTES,
+                                       (uint32_t) rx_id,
+                                       (uint32_t) snap->sample_rate,
+                                       &prefix, bins, nbins);
+
+    if (frame_len == 0) {
+      g_mutex_unlock(&tci_mutex);
+      continue;
+    }
+
+    //
+    // KTD4: a frame still waiting in the slot is replaced, never queued behind
+    // its predecessor, so a slow client sees fresh data with holes in seq.
+    //
+    if (client->spectrum_slot_len[rx_id] != 0) {
+      client->spectrum_slot_replaced[rx_id]++;
+    }
+
+    client->spectrum_slot_len[rx_id] = frame_len;
+    client->spectrum_bins_eff[rx_id] = (int) nbins;
+    client->spectrum_eff_low[rx_id] = (long long) span.low_hz;
+    client->spectrum_eff_high[rx_id] = (long long) span.high_hz;
+    client->spectrum_have_span[rx_id] = 1;
+    tci_lws_pending_writable = 1;
+    g_mutex_unlock(&tci_mutex);
+    woke_lws = 1;
+  }
+
+  g_list_free(clients);
+
+  if (woke_lws && tci_lws_context != NULL) {
+    lws_cancel_service(tci_lws_context);
+  }
 }
 
 //
-// U3 fills this in: emit spectrum_state:<rx>,<state>; to the clients
-// subscribed to this receiver. The subscription survives the pause (R9).
+// Emit spectrum_state:<rx>,<state>; to the clients subscribed to this
+// receiver. The subscription survives the pause (R9).
 //
 static void tci_spectrum_state_changed(int rx_id, int state) {
-  (void) rx_id;
-  (void) state;
+  char msg[MAXMSGSIZE];
+
+  if (!g_atomic_int_get(&tci_spectrum_clients)) { return; }
+
+  if (rx_id < 0 || rx_id >= TCI_RX_AUDIO_MAX_RECEIVERS) { return; }
+
+  snprintf(msg, sizeof(msg), "%s:%d,%d;",
+           tci_cmd_name("spectrum_state", "SPECTRUM_STATE"), rx_id, state ? 1 : 0);
+  tci_spectrum_send_to_subscribers(rx_id, msg);
 }
 
 //
-// U4 fills this in: recompute fps_eff = min(requested fps, rx->fps) and emit
-// spectrum_fps:<rx>,<fps>; to the clients whose effective rate moved (R10).
+// The local display rate of this receiver moved, so fps_eff has to follow it
+// (R10) and every client whose effective rate really changed has to be told.
+//
+// This is the static half only. The adaptive ladder of R4 (drop a step on
+// three slot replacements in one second, climb back after ten quiet seconds)
+// belongs to U4 and will drive the same fields from the producer.
 //
 static void tci_spectrum_fps_changed(int rx_id) {
-  (void) rx_id;
+  GList *clients;
+  int display_fps;
+
+  if (!g_atomic_int_get(&tci_spectrum_clients)) { return; }
+
+  if (rx_id < 0 || rx_id >= TCI_RX_AUDIO_MAX_RECEIVERS) { return; }
+
+  display_fps = tci_spectrum_display_rate(rx_id);
+  clients = tci_clients_snapshot();
+
+  for (GList *l = clients; l != NULL; l = l->next) {
+    CLIENT *client = (CLIENT *) l->data;
+    char msg[MAXMSGSIZE];
+    int fps_eff = 0;
+    int changed = 0;
+
+    if (client == NULL || !client->running) { continue; }
+
+    g_mutex_lock(&tci_mutex);
+
+    if (client->spectrum_enabled[rx_id]) {
+      fps_eff = tci_spectrum_fps_step(client->spectrum_fps_req[rx_id], display_fps);
+
+      if (fps_eff != client->spectrum_fps_eff[rx_id]) {
+        client->spectrum_fps_eff[rx_id] = fps_eff;
+        client->spectrum_phase[rx_id] = 0;
+        changed = 1;
+      }
+    }
+
+    g_mutex_unlock(&tci_mutex);
+
+    if (changed) {
+      snprintf(msg, sizeof(msg), "%s:%d,%d;",
+               tci_cmd_name("spectrum_fps", "SPECTRUM_FPS"), rx_id, fps_eff);
+      tci_send_text(client, msg);
+    }
+  }
+
+  g_list_free(clients);
 }
 
 static void tci_spectrum_state_init(void) {
@@ -5774,6 +6085,199 @@ static void tci_cmd_band_ex(CLIENT *client, const TCI_CMD *cmd) {
   g_idle_add(tci_apply_band_update, bu);
 }
 
+//
+// Spectrum extension (R3, R5, R10).
+//
+// The subscription itself is the negotiation: there is no separate enable
+// command, and a client which never sent spectrum_start receives neither a
+// type=4 frame nor any spectrum_* text (R1).
+//
+// Grammar:
+//   spectrum_start:<rx>[,<bins>[,<fps>]];  -> spectrum_start:<rx>,<bins>,<fps>;
+//                                             plus spectrum_state:<rx>,<0|1>;
+//   spectrum_stop:<rx>;                    -> spectrum_stop:<rx>;
+//   spectrum_span:<rx>[,<low>,<high>];     -> spectrum_span:<rx>,<low>,<high>;
+//                                             or ...,pending; or ...,error;
+//
+static int tci_spectrum_valid_rx(int rx_id) {
+  return rx_id >= 0 && rx_id < receivers &&
+         rx_id < TCI_RX_AUDIO_MAX_RECEIVERS && receiver[rx_id] != NULL;
+}
+
+static void tci_cmd_spectrum_start(CLIENT *client, const TCI_CMD *cmd) {
+  char msg[MAXMSGSIZE];
+  int rx_id;
+  int bins;
+  int fps_req;
+  int fps_eff;
+  int display_fps;
+  int displaying;
+  int was_enabled;
+
+  if (client == NULL || cmd == NULL) { return; }
+
+  rx_id = tci_int(cmd->argv[0], -1);
+
+  if (!tci_spectrum_valid_rx(rx_id)) {
+    t_print("TCI%d spectrum_start ignored: no receiver %d\n", client->seq, rx_id);
+    return;
+  }
+
+  //
+  // Missing arguments mean the documented defaults, so "spectrum_start:0;" is
+  // a complete subscription request and not a query.
+  //
+  bins = (cmd->argc >= 2) ? tci_int(cmd->argv[1], TCI_SPECTRUM_DEFAULT_BINS)
+         : TCI_SPECTRUM_DEFAULT_BINS;
+  bins = (int) tci_spectrum_clamp_bins(bins);
+  fps_req = (cmd->argc >= 3) ? tci_int(cmd->argv[2], TCI_SPECTRUM_DEFAULT_FPS)
+            : TCI_SPECTRUM_DEFAULT_FPS;
+
+  if (fps_req < 1) { fps_req = 1; }
+
+  display_fps = tci_spectrum_display_rate(rx_id);
+  displaying = receiver[rx_id]->displaying ? 1 : 0;
+  fps_eff = tci_spectrum_fps_step(fps_req, display_fps);
+  g_mutex_lock(&tci_mutex);
+  was_enabled = client->spectrum_enabled[rx_id];
+  client->spectrum_enabled[rx_id] = 1;
+  client->spectrum_bins_req[rx_id] = bins;
+  client->spectrum_bins_eff[rx_id] = 0;
+  client->spectrum_fps_req[rx_id] = fps_req;
+  client->spectrum_fps_eff[rx_id] = fps_eff;
+  client->spectrum_phase[rx_id] = 0;
+  client->spectrum_seq[rx_id] = 0;             // seq restarts on every start
+  client->spectrum_slot_len[rx_id] = 0;        // drop a frame from the old run
+  client->spectrum_slot_replaced[rx_id] = 0;
+  client->spectrum_have_span[rx_id] = 0;       // no effective span yet
+  // a span requested before the subscription, or across a restart, is kept
+  g_mutex_unlock(&tci_mutex);
+
+  if (!was_enabled) {
+    g_atomic_int_inc(&tci_spectrum_clients);
+  }
+
+  snprintf(msg, sizeof(msg), "%s:%d,%d,%d;",
+           tci_cmd_name("spectrum_start", "SPECTRUM_START"), rx_id, bins, fps_eff);
+  tci_send_text(client, msg);
+  //
+  // The display may be paused right now (TX on a non-duplex radio), in which
+  // case no frame would follow and the client could not tell that apart from
+  // a dead link. Report the current state immediately (R9).
+  //
+  snprintf(msg, sizeof(msg), "%s:%d,%d;",
+           tci_cmd_name("spectrum_state", "SPECTRUM_STATE"), rx_id, displaying);
+  tci_send_text(client, msg);
+}
+
+static void tci_cmd_spectrum_stop(CLIENT *client, const TCI_CMD *cmd) {
+  char msg[MAXMSGSIZE];
+  int rx_id;
+  int was_enabled;
+
+  if (client == NULL || cmd == NULL) { return; }
+
+  rx_id = tci_int(cmd->argv[0], -1);
+
+  //
+  // Unlike spectrum_start this does not insist on a live receiver: a client
+  // must be able to unsubscribe from a receiver that has been removed in the
+  // meantime, otherwise the atomic counter would never come back down.
+  //
+  if (rx_id < 0 || rx_id >= TCI_RX_AUDIO_MAX_RECEIVERS) {
+    t_print("TCI%d spectrum_stop ignored: bad receiver %d\n", client->seq, rx_id);
+    return;
+  }
+
+  g_mutex_lock(&tci_mutex);
+  was_enabled = client->spectrum_enabled[rx_id];
+  client->spectrum_enabled[rx_id] = 0;
+  client->spectrum_slot_len[rx_id] = 0;
+  g_free(client->spectrum_slot[rx_id]);
+  client->spectrum_slot[rx_id] = NULL;
+  client->spectrum_have_span[rx_id] = 0;
+  g_mutex_unlock(&tci_mutex);
+
+  if (was_enabled) {
+    (void) g_atomic_int_dec_and_test(&tci_spectrum_clients);
+  }
+
+  snprintf(msg, sizeof(msg), "%s:%d;",
+           tci_cmd_name("spectrum_stop", "SPECTRUM_STOP"), rx_id);
+  tci_send_text(client, msg);
+}
+
+static void tci_cmd_spectrum_span(CLIENT *client, const TCI_CMD *cmd) {
+  char msg[MAXMSGSIZE];
+  long long low = 0;
+  long long high = 0;
+  int rx_id;
+  int have_args;
+  int have_span;
+
+  if (client == NULL || cmd == NULL) { return; }
+
+  rx_id = tci_int(cmd->argv[0], -1);
+
+  if (!tci_spectrum_valid_rx(rx_id)) {
+    t_print("TCI%d spectrum_span ignored: no receiver %d\n", client->seq, rx_id);
+    return;
+  }
+
+  have_args = (cmd->argc >= 3 &&
+               cmd->argv[1] != NULL && cmd->argv[1][0] != '\0' &&
+               cmd->argv[2] != NULL && cmd->argv[2][0] != '\0');
+
+  if (have_args) {
+    //
+    // Absolute Hz do not fit in an int at VHF, so this parses wider than the
+    // other handlers do.
+    //
+    low = (long long) g_ascii_strtoll(cmd->argv[1], NULL, 10);
+    high = (long long) g_ascii_strtoll(cmd->argv[2], NULL, 10);
+
+    if (!(low == 0 && high == 0) && low >= high) {
+      t_print("TCI%d spectrum_span rejected: low %lld not below high %lld\n",
+              client->seq, low, high);
+      snprintf(msg, sizeof(msg), "%s:%d,error;",
+               tci_cmd_name("spectrum_span", "SPECTRUM_SPAN"), rx_id);
+      tci_send_text(client, msg);
+      return;
+    }
+
+    g_mutex_lock(&tci_mutex);
+    client->spectrum_req_low[rx_id] = low;
+    client->spectrum_req_high[rx_id] = high;
+    // the span reported back is the one of the next frame, not of the last
+    client->spectrum_have_span[rx_id] = 0;
+    g_mutex_unlock(&tci_mutex);
+  }
+
+  // no arguments: plain query of the current state
+  g_mutex_lock(&tci_mutex);
+  have_span = client->spectrum_have_span[rx_id];
+
+  if (have_span) {
+    low = client->spectrum_eff_low[rx_id];
+    high = client->spectrum_eff_high[rx_id];
+  } else {
+    low = client->spectrum_req_low[rx_id];
+    high = client->spectrum_req_high[rx_id];
+  }
+
+  g_mutex_unlock(&tci_mutex);
+
+  if (have_span) {
+    snprintf(msg, sizeof(msg), "%s:%d,%lld,%lld;",
+             tci_cmd_name("spectrum_span", "SPECTRUM_SPAN"), rx_id, low, high);
+  } else {
+    snprintf(msg, sizeof(msg), "%s:%d,%lld,%lld,pending;",
+             tci_cmd_name("spectrum_span", "SPECTRUM_SPAN"), rx_id, low, high);
+  }
+
+  tci_send_text(client, msg);
+}
+
 static void tci_cmd_stop(CLIENT *client, const TCI_CMD *cmd) {
   TCI_TX_OWNER_MODE owner_mode = TCI_TX_OWNER_NONE;
   int abort_rtty = 0;
@@ -5885,6 +6389,9 @@ static const TCI_DISPATCH tci_dispatch[] = {
   { "cw_macros_speed_down", 1,  1, tci_cmd_cw_macros_speed_down },
   { "rx_att_ex",         1,  2, tci_cmd_rx_att_ex },
   { "band_ex",           1,  3, tci_cmd_band_ex },
+  { "spectrum_start",    1,  3, tci_cmd_spectrum_start },
+  { "spectrum_stop",     1,  1, tci_cmd_spectrum_stop },
+  { "spectrum_span",     1,  3, tci_cmd_spectrum_span },
   { "stop",              0,  0, tci_cmd_stop },
   { NULL,                0,  0, NULL }
 };
@@ -6128,6 +6635,21 @@ static void tci_init_client(CLIENT *client, int fd, int seq) {
     client->rx_audio_resampler_r[i] = NULL;
     client->iq_stream_enabled[i] = 0;
     client->iq_cw_phase[i] = 0.0;
+    client->spectrum_enabled[i] = 0;
+    client->spectrum_bins_req[i] = TCI_SPECTRUM_DEFAULT_BINS;
+    client->spectrum_bins_eff[i] = 0;
+    client->spectrum_fps_req[i] = TCI_SPECTRUM_DEFAULT_FPS;
+    client->spectrum_fps_eff[i] = TCI_SPECTRUM_DEFAULT_FPS;
+    client->spectrum_phase[i] = 0;
+    client->spectrum_req_low[i] = 0;
+    client->spectrum_req_high[i] = 0;
+    client->spectrum_eff_low[i] = 0;
+    client->spectrum_eff_high[i] = 0;
+    client->spectrum_have_span[i] = 0;
+    client->spectrum_seq[i] = 0;
+    client->spectrum_slot[i] = NULL;
+    client->spectrum_slot_len[i] = 0;
+    client->spectrum_slot_replaced[i] = 0;
   }
 }
 
@@ -6324,6 +6846,17 @@ static void tci_lws_free_queue(CLIENT *client) {
   queue = client->lws_tx_queue;
   client->lws_tx_queue = NULL;
   client->idle_queued = 0;
+  //
+  // The spectrum slots die here, the single cleanup point that runs exactly
+  // once per connection (LWS_CALLBACK_CLOSED). The subscription flags and the
+  // atomic counter are cleared earlier, in the same callback, before the
+  // client leaves tci_clients: by the time this runs no producer can reach it.
+  //
+  for (int i = 0; i < TCI_RX_AUDIO_MAX_RECEIVERS; i++) {
+    client->spectrum_slot_len[i] = 0;
+    g_free(client->spectrum_slot[i]);
+    client->spectrum_slot[i] = NULL;
+  }
   g_mutex_unlock(&tci_mutex);
   if (queue == NULL) { return; }
   while (!g_queue_is_empty(queue)) {
@@ -6332,6 +6865,53 @@ static void tci_lws_free_queue(CLIENT *client) {
     g_free(resp);
   }
   g_queue_free(queue);
+}
+
+//
+// Write the pending spectrum frame of one receiver (KTD4). Called only when
+// the FIFO is empty, so text, audio and IQ keep their priority, and it writes
+// at most one frame per writable callback like the FIFO path does. The slot is
+// outside idle_queued on purpose: that counter is saturated by the audio
+// stream and would never measure the spectrum.
+//
+static int tci_lws_write_slot(CLIENT *client) {
+  unsigned char *buf;
+  struct lws *wsi;
+  size_t len = 0;
+  int idx = -1;
+  int rc;
+  g_mutex_lock(&tci_mutex);
+  wsi = client->wsi;
+  for (int i = 0; i < TCI_RX_AUDIO_MAX_RECEIVERS; i++) {
+    if (client->spectrum_slot[i] != NULL && client->spectrum_slot_len[i] != 0) {
+      idx = i;
+      len = client->spectrum_slot_len[i];
+      break;
+    }
+  }
+  if (idx < 0 || wsi == NULL) {
+    g_mutex_unlock(&tci_mutex);
+    return 0;
+  }
+  buf = g_malloc(LWS_PRE + len);
+  memcpy(&buf[LWS_PRE], client->spectrum_slot[idx], len);
+  client->spectrum_slot_len[idx] = 0;
+  g_mutex_unlock(&tci_mutex);
+  rc = lws_write(wsi, &buf[LWS_PRE], len, LWS_WRITE_BINARY);
+  g_free(buf);
+  g_mutex_lock(&tci_mutex);
+  if (rc < 0) {
+    client->running = 0;
+    g_mutex_unlock(&tci_mutex);
+    return -1;
+  }
+  if (client->wsi != NULL &&
+      ((client->lws_tx_queue != NULL && !g_queue_is_empty(client->lws_tx_queue)) ||
+       tci_spectrum_slot_pending(client))) {
+    lws_callback_on_writable(client->wsi);
+  }
+  g_mutex_unlock(&tci_mutex);
+  return 0;
 }
 
 static int tci_lws_write_queued(CLIENT *client) {
@@ -6344,7 +6924,7 @@ static int tci_lws_write_queued(CLIENT *client) {
     resp = (RESPONSE *) g_queue_pop_head(client->lws_tx_queue);
   }
   g_mutex_unlock(&tci_mutex);
-  if (resp == NULL) { return 0; }
+  if (resp == NULL) { return tci_lws_write_slot(client); }
   if (resp->type == opCLOSE || wsi == NULL) {
     g_mutex_lock(&tci_mutex);
     if (client->idle_queued > 0) {
@@ -6383,7 +6963,9 @@ static int tci_lws_write_queued(CLIENT *client) {
     g_mutex_unlock(&tci_mutex);
     return -1;
   }
-  if (client->wsi != NULL && client->lws_tx_queue != NULL && !g_queue_is_empty(client->lws_tx_queue)) {
+  if (client->wsi != NULL &&
+      ((client->lws_tx_queue != NULL && !g_queue_is_empty(client->lws_tx_queue)) ||
+       tci_spectrum_slot_pending(client))) {
     lws_callback_on_writable(client->wsi);
   }
   g_mutex_unlock(&tci_mutex);
@@ -6474,6 +7056,7 @@ static int tci_lws_callback(struct lws *wsi, enum lws_callback_reasons reason,
     TCI_TX_OWNER_MODE owner_mode = TCI_TX_OWNER_NONE;
     int cleanup_tx_audio = 0;
     int abort_rtty = 0;
+    int spectrum_dropped = 0;
     g_mutex_lock(&tci_mutex);
     cleanup_tx_audio = client->tx_audio_session || client->tx_audio_enabled;
     client->tx_audio_enabled = 0;
@@ -6497,9 +7080,24 @@ static int tci_lws_callback(struct lws *wsi, enum lws_callback_reasons reason,
       tci_rtty_owner = NULL;
       abort_rtty = 1;
     }
+    //
+    // Drop the spectrum subscriptions before the client leaves tci_clients,
+    // so the producer cannot pick it up again. The slot buffers themselves are
+    // released in tci_lws_free_queue() a few lines below.
+    //
+    for (int i = 0; i < TCI_RX_AUDIO_MAX_RECEIVERS; i++) {
+      if (client->spectrum_enabled[i]) {
+        client->spectrum_enabled[i] = 0;
+        spectrum_dropped++;
+      }
+      client->spectrum_slot_len[i] = 0;
+    }
     tci_set_locks_clear_client(client);
     tci_clients = g_list_remove(tci_clients, client);
     g_mutex_unlock(&tci_mutex);
+    while (spectrum_dropped-- > 0) {
+      (void) g_atomic_int_dec_and_test(&tci_spectrum_clients);
+    }
     if (abort_rtty) {
       rtty_engine_abort();
       t_print("TCI%d RTTY owner disconnected, forcing RX\n", client->seq);
@@ -6619,7 +7217,8 @@ static gpointer tci_lws_server(gpointer data) {
         struct lws *wsi = NULL;
         g_mutex_lock(&tci_mutex);
         if (client != NULL && client->running && client->wsi != NULL &&
-            client->lws_tx_queue != NULL && !g_queue_is_empty(client->lws_tx_queue)) {
+            ((client->lws_tx_queue != NULL && !g_queue_is_empty(client->lws_tx_queue)) ||
+             tci_spectrum_slot_pending(client))) {
           wsi = client->wsi;
         }
         g_mutex_unlock(&tci_mutex);
