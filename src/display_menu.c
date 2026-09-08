@@ -873,7 +873,7 @@ void display_menu(GtkWidget *parent) {
   gtk_grid_attach(GTK_GRID(general_grid), b_display_waterfall, col, row, 1, 1);
   g_signal_connect(b_display_waterfall, "toggled", G_CALLBACK(display_waterfall_cb), NULL);
   //------------------------------------------------------------------------------------------------------------
-  row = row - 4;
+  row = row - 3;
   col++;
   GtkWidget *b_display_info_bar = gtk_check_button_new_with_label("Display Info Bar");
   gtk_widget_set_name(b_display_info_bar, "boldlabel_blue");
