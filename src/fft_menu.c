@@ -461,10 +461,10 @@ void fft_menu(GtkWidget *parent) {
   g_signal_connect(w, "button_press_event", G_CALLBACK(close_cb), NULL);
   gtk_widget_set_name(w, "close_button");
   gtk_grid_attach(GTK_GRID(grid), w, 0, 0, 1, 1);
-  w = gtk_label_new("Filter Type");
+  w = gtk_label_new("WDSP FIR Filter Type");
   gtk_widget_set_name(w, "boldlabel");
   gtk_grid_attach(GTK_GRID(grid), w, 0, 2, 1, 1);
-  w = gtk_label_new("Filter Size");
+  w = gtk_label_new("WDSP FIR Filter NC");
   gtk_widget_set_name(w, "boldlabel");
   gtk_grid_attach(GTK_GRID(grid), w, 0, 3, 1, 1);
   w = gtk_label_new("Binaural");
@@ -537,9 +537,12 @@ void fft_menu(GtkWidget *parent) {
     g_signal_connect(w, "changed", G_CALLBACK(filter_type_cb), GINT_TO_POINTER(chan));
     //
     // The filter size must be a power of two and at least equal to the dsp size
-    // Apart from that, we allow values from 1k ... 32k.
+    // Apart from that, we allow values from 1k ... 16k.
     //
     w = gtk_combo_box_text_new();
+    gtk_widget_set_tooltip_text(w, "Sets the number of coefficients (NC) used by the WDSP FIR filters.\n\n"
+                                   "Higher values provide steeper filter skirts at the cost of increased CPU load.\n\n"
+                                   "Default setting: 2048 (change only for a specific reason)");
     s = 512;
     j = 0;
     for (;;) {
@@ -550,7 +553,7 @@ void fft_menu(GtkWidget *parent) {
         if (s == fsize) { gtk_combo_box_set_active(GTK_COMBO_BOX(w), j); }
         j++;
       }
-      if (s >= 32768) { break; }
+      if (s >= 16384) { break; }
     }
     my_combo_attach(GTK_GRID(grid), w, col, 3, 1, 1);
     g_signal_connect(w, "changed", G_CALLBACK(filter_size_cb), GINT_TO_POINTER(chan));

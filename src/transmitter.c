@@ -416,6 +416,7 @@ static void tx_restore_state(TRANSMITTER *tx) {
   GetPropI1("transmitter.%d.alcmode",           tx->id,               tx->alcmode);
   GetPropI1("transmitter.%d.low_latency",       tx->id,               tx->low_latency);
   GetPropI1("transmitter.%d.fft_size",          tx->id,               tx->fft_size);
+  if (tx->fft_size > 16384) { tx->fft_size = 16384; }
   GetPropI1("transmitter.%d.fps",               tx->id,               tx->fps);
   GetPropI1("transmitter.%d.filter_low",        tx->id,               tx->filter_low);
   GetPropI1("transmitter.%d.filter_high",       tx->id,               tx->filter_high);

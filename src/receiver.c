@@ -443,6 +443,7 @@ void rx_restore_state(RECEIVER *rx) {
   GetPropI1("receiver.%d.smetermode", rx->id,                   rx->smetermode);
   GetPropI1("receiver.%d.low_latency", rx->id,                  rx->low_latency);
   GetPropI1("receiver.%d.fft_size", rx->id,                     rx->fft_size);
+  if (rx->fft_size > 16384) { rx->fft_size = 16384; }
   GetPropI1("receiver.%d.sample_rate", rx->id,                  rx->sample_rate);
   //
   // This may happen if the firmware was down-graded from P2 to P1
