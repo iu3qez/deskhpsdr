@@ -15,15 +15,15 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>2.7.37</string>
+	<string>2.7.38</string>
 	<key>CFBundleVersion</key>
-	<string>207037</string>
+	<string>207038</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
     <key>CFBundleGetInfoString</key>
     <string>deskHPSDR: OpenHPSDR Host App for SDR-TRX in Amateur Radio</string>
     <key>NSHumanReadableCopyright</key>
-    <string>Copyright (C) 2026 by Heiko Amft, DL1BZ</string>
+    <string>Copyright (C) 2024-2026 by Heiko Amft, DL1BZ</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>deskHPSDR requires access to audio input devices for microphone and transmit audio.</string>
 	<key>NSLocalNetworkUsageDescription</key>
