@@ -396,6 +396,7 @@ typedef struct {
   int client_seq;
   int vfo_id;
   int band;
+  int next;       // 1 = advance the band-stack when already on that band
 } TCI_BAND_UPDATE;
 
 typedef void (*TCI_HANDLER)(CLIENT *client, const TCI_CMD *cmd);
@@ -811,43 +812,10 @@ static int tci_spectrum_display_rate(int rx_id) {
 }
 
 //
-// Effective frame rate of a subscription (KTD5, R10).
+// The served rate of a subscription is tci_spectrum_fps_step() in the pure
+// module (KTD5, R10): the adaptive ladder of tci_spectrum_ladder_fps() feeds
+// it, so with a display rate of 30 a request of 20 is served at 15.
 //
-// The producer runs once per display cycle and sends every
-// display_fps / fps_eff-th of them, so fps_eff must divide display_fps
-// exactly: the largest divisor of display_fps not above the request. With a
-// display rate of 30, a request of 20 therefore becomes 15, not 20.
-// A display rate of zero means "rate not known yet"; the request is kept as
-// is and the producer falls back to one frame per cycle.
-//
-// The adaptive 20->10->5 ladder of R4 lives in tci_spectrum_ladder_fps(), whose
-// result comes in here as "requested": this function only applies the ceiling.
-//
-static int tci_spectrum_fps_step(int requested, int display_fps) {
-  int want;
-  int d;
-
-  if (requested < 1) { requested = 1; }
-
-  if (display_fps <= 0) { return requested; }
-
-  want = (requested < display_fps) ? requested : display_fps;
-
-  for (d = want; d > 1; d--) {
-    if ((display_fps % d) == 0) { return d; }
-  }
-
-  return 1;
-}
-
-//
-// Number of display cycles between two frames of a subscription.
-//
-static int tci_spectrum_divisor(int fps_eff, int display_fps) {
-  if (fps_eff <= 0 || display_fps <= fps_eff) { return 1; }
-
-  return display_fps / fps_eff;
-}
 
 //
 // True when at least one receiver slot of this client holds a frame.
@@ -6061,6 +6029,29 @@ static int tci_apply_band_update(void *data) {
   char msg[MAXMSGSIZE];
   const BAND *band;
   if (bu == NULL) { return G_SOURCE_REMOVE; }
+  //
+  // The lws-thread check ran earlier; by now the VFO may already sit on the
+  // requested band (a repeated command, or a local band change in between).
+  // vfo_band_changed() on the current band advances the band-stack, which is
+  // only wanted with an explicit "next", so re-check here, and re-validate
+  // the band-stack frequency because current_entry can move in the meantime.
+  //
+  if (bu->band == vfo[bu->vfo_id].band && !bu->next) {
+    band = band_get_band(bu->band);
+    snprintf(msg, sizeof(msg), "%s:%d,%s;", tci_cmd_name("band_ex", "BAND_EX"), bu->vfo_id,
+             band != NULL ? band->title : "");
+    tci_send_text_by_seq(bu->client_seq, msg);
+    g_free(bu);
+    return G_SOURCE_REMOVE;
+  }
+  if (bu->band != vfo[bu->vfo_id].band && (radio == NULL || !vfo_band_change_allowed(bu->band))) {
+    band = band_get_band(bu->band);
+    snprintf(msg, sizeof(msg), "%s:%d,%s,error;", tci_cmd_name("band_ex", "BAND_EX"), bu->vfo_id,
+             band != NULL ? band->title : "");
+    tci_send_text_by_seq(bu->client_seq, msg);
+    g_free(bu);
+    return G_SOURCE_REMOVE;
+  }
   tci_begin_apply();
   vfo_band_changed(bu->vfo_id, bu->band);
   tci_end_apply();
@@ -6137,6 +6128,7 @@ static void tci_cmd_band_ex(CLIENT *client, const TCI_CMD *cmd) {
   bu->client_seq = client->seq;
   bu->vfo_id = rx;
   bu->band = b;
+  bu->next = next;
   g_idle_add(tci_apply_band_update, bu);
 }
 

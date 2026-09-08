@@ -360,17 +360,42 @@ static void test_ladder_fps_table(void) {
   CHECK(tci_spectrum_ladder_fps(1, 20) == 10);
   CHECK(tci_spectrum_ladder_fps(2, 20) == 5);
   /* a request above the top rung starts from the highest rung below it */
-  CHECK(tci_spectrum_ladder_fps(0, 25) == 20);
-  CHECK(tci_spectrum_ladder_fps(1, 25) == 10);
-  CHECK(tci_spectrum_ladder_fps(2, 25) == 5);
+  // level 0 never reduces a request; the first step lands strictly below it
+  CHECK(tci_spectrum_ladder_fps(0, 25) == 25);
+  CHECK(tci_spectrum_ladder_fps(1, 25) == 20);
+  CHECK(tci_spectrum_ladder_fps(2, 25) == 10);
+  CHECK(tci_spectrum_ladder_fps(0, 15) == 15);
+  CHECK(tci_spectrum_ladder_fps(1, 15) == 10);
+  CHECK(tci_spectrum_ladder_fps(2, 15) == 5);
   /* request 10: the 20 rung does not exist for this client */
   CHECK(tci_spectrum_ladder_fps(0, 10) == 10);
   CHECK(tci_spectrum_ladder_fps(1, 10) == 5);
   CHECK(tci_spectrum_ladder_fps(2, 10) == 5);
   /* request 7: highest rung below it is 5, and there is nothing under it */
-  CHECK(tci_spectrum_ladder_fps(0, 7) == 5);
+  CHECK(tci_spectrum_ladder_fps(0, 7) == 7);
   CHECK(tci_spectrum_ladder_fps(1, 7) == 5);
   CHECK(tci_spectrum_ladder_fps(2, 7) == 5);
+  // served rate: largest divisor of the display rate not above the request
+  CHECK(tci_spectrum_fps_step(20, 10) == 10);
+  CHECK(tci_spectrum_fps_step(10, 10) == 10);
+  CHECK(tci_spectrum_fps_step(7, 10) == 5);
+  CHECK(tci_spectrum_fps_step(20, 30) == 15);
+  CHECK(tci_spectrum_fps_step(25, 50) == 25);
+  CHECK(tci_spectrum_fps_step(10, 15) == 5);
+  CHECK(tci_spectrum_fps_step(7, 30) == 6);
+  CHECK(tci_spectrum_fps_step(20, 0) == 20);
+  CHECK(tci_spectrum_fps_step(0, 10) == 1);
+  CHECK(tci_spectrum_fps_step(1, 10) == 1);
+  // composed negotiation at level 0 is the request bounded by the display rate
+  CHECK(tci_spectrum_fps_step(tci_spectrum_ladder_fps(0, 25), 50) == 25);
+  CHECK(tci_spectrum_fps_step(tci_spectrum_ladder_fps(0, 15), 30) == 15);
+  CHECK(tci_spectrum_fps_step(tci_spectrum_ladder_fps(1, 15), 30) == 10);
+  // cycles between two frames
+  CHECK(tci_spectrum_divisor(0, 10) == 1);
+  CHECK(tci_spectrum_divisor(10, 10) == 1);
+  CHECK(tci_spectrum_divisor(5, 10) == 2);
+  CHECK(tci_spectrum_divisor(15, 30) == 2);
+  CHECK(tci_spectrum_divisor(10, 0) == 1);
   CHECK(tci_spectrum_ladder_fps(0, 5) == 5);
   CHECK(tci_spectrum_ladder_fps(2, 5) == 5);
   /* below the last rung the request is served as is at every level */

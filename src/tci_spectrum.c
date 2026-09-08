@@ -341,20 +341,48 @@ int tci_spectrum_ladder_fps(int level, int requested) {
 
   if (level > TCI_SPECTRUM_LADDER_LEVELS - 1) { level = TCI_SPECTRUM_LADDER_LEVELS - 1; }
 
-  // a request below the last rung has no ladder: it is already as low as it goes
-  if (requested < tci_spectrum_ladder_rungs[TCI_SPECTRUM_LADDER_LEVELS - 1]) { return requested; }
+  // level 0 is the request itself: the ladder only ever reduces under
+  // saturation, it is never a ceiling on what the client negotiated (KTD5)
+  if (level == 0) { return requested; }
 
-  // start from the highest rung not above the request
+  // a request at or below the last rung has no ladder: it is already as low
+  // as it goes
+  if (requested <= tci_spectrum_ladder_rungs[TCI_SPECTRUM_LADDER_LEVELS - 1]) { return requested; }
+
+  // the first step down lands on the highest rung strictly below the request
   base = 0;
 
   while (base < TCI_SPECTRUM_LADDER_LEVELS - 1 &&
-         tci_spectrum_ladder_rungs[base] > requested) {
+         tci_spectrum_ladder_rungs[base] >= requested) {
     base++;
   }
 
-  idx = base + level;
+  idx = base + level - 1;
 
   if (idx > TCI_SPECTRUM_LADDER_LEVELS - 1) { idx = TCI_SPECTRUM_LADDER_LEVELS - 1; }
 
   return tci_spectrum_ladder_rungs[idx];
+}
+
+int tci_spectrum_fps_step(int requested, int display_fps) {
+  int want;
+  int d;
+
+  if (requested < 1) { requested = 1; }
+
+  if (display_fps <= 0) { return requested; }
+
+  want = (requested < display_fps) ? requested : display_fps;
+
+  for (d = want; d > 1; d--) {
+    if ((display_fps % d) == 0) { return d; }
+  }
+
+  return 1;
+}
+
+int tci_spectrum_divisor(int fps_eff, int display_fps) {
+  if (fps_eff <= 0 || display_fps <= fps_eff) { return 1; }
+
+  return display_fps / fps_eff;
 }

@@ -201,11 +201,26 @@ int tci_spectrum_ladder_update(TCI_SPECTRUM_LADDER *l, uint32_t replaced_total,
                                int64_t now_us);
 
 //
-// Request level fps of a rung: the rungs are 20, 10 and 5, the starting rung
-// is the highest one not above "requested", and "level" moves down from there,
-// clamped to the last rung. A request below the last rung has no ladder at all
-// and is returned unchanged at every level. "level" out of range is clamped.
+// Request level fps for a ladder level. Level 0 is the request itself: the
+// ladder only reduces under saturation, it is never a ceiling. From level 1
+// on, the rungs are 20, 10 and 5: the first step lands on the highest rung
+// strictly below "requested" and each further level moves down one rung,
+// clamped to the last one. A request at or below the last rung is returned
+// unchanged at every level. "level" out of range is clamped.
 //
 int tci_spectrum_ladder_fps(int level, int requested);
+
+//
+// Served rate of a subscription (R10): the largest divisor of display_fps not
+// above min(requested, display_fps), so the producer sends every
+// display_fps / fps_eff-th display cycle with no drift. display_fps <= 0
+// ("rate not known yet") returns the request unchanged.
+//
+int tci_spectrum_fps_step(int requested, int display_fps);
+
+//
+// Number of display cycles between two frames of a subscription.
+//
+int tci_spectrum_divisor(int fps_eff, int display_fps);
 
 #endif
