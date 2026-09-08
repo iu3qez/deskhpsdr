@@ -216,7 +216,7 @@ static void zoom_value_changed_cb(GtkWidget *widget, gpointer data) {
   g_mutex_lock(&pan_zoom_mutex);
   g_mutex_lock(&active_receiver->display_mutex);
   active_receiver->zoom = (int)(gtk_range_get_value(GTK_RANGE(zoom_scale)) + 0.5);
-  rx_update_zoom(active_receiver);
+  rx_update_zoom_locked(active_receiver);
   g_signal_handler_block(G_OBJECT(pan_scale), pan_signal_id);
   gtk_range_set_range(GTK_RANGE(pan_scale), 0.0,
                       (double)(active_receiver->zoom == 1 ? active_receiver->pixels : active_receiver->pixels - active_receiver->width));
@@ -238,8 +238,10 @@ void set_zoom(int rx, double value) {
   int ival = (int) value;
   if (ival > MAX_ZOOM) { ival = MAX_ZOOM; }
   if (ival < 1) { ival = 1; }
+  g_mutex_lock(&receiver[rx]->display_mutex);
   receiver[rx]->zoom = ival;
-  rx_update_zoom(receiver[rx]);
+  rx_update_zoom_locked(receiver[rx]);
+  g_mutex_unlock(&receiver[rx]->display_mutex);
   if (display_zoompan && active_receiver->id == rx) {
     gtk_range_set_value(GTK_RANGE(zoom_scale), receiver[rx]->zoom);
   } else {

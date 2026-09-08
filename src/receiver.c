@@ -713,6 +713,16 @@ static int rx_update_display(gpointer data) {
       return TRUE;
     }
   }
+  //
+  // Returning FALSE destroys this GSource. Clear the recorded id if this
+  // callback is the source currently stored in the receiver. Otherwise a
+  // later rx_set_displaying() could try to remove a stale, possibly recycled,
+  // source id.
+  //
+  GSource *self = g_main_current_source();
+  if (self != NULL && g_source_get_id(self) == rx->update_timer_id) {
+    rx->update_timer_id = 0;
+  }
   return FALSE;
 }
 
@@ -1634,13 +1644,16 @@ void rx_add_div_iq_samples(RECEIVER *rx, double i0, double q0, double i1, double
   rx_add_iq_samples(rx, i_sample, q_sample);
 }
 
-void rx_update_zoom(RECEIVER *rx) {
+void rx_update_zoom_locked(RECEIVER *rx) {
   //
   // This is called whenever rx->zoom or rx->width changes,
   // since in both cases the analyzer must be restarted.
+  // The caller must hold display_mutex because the display timer writes
+  // rx->pixels values into rx->pixel_samples.
   //
-  rx->pixels = rx->width * rx->zoom;
-  rx->hz_per_pixel = (double) rx->sample_rate / (double) rx->pixels;
+  int new_pixels = rx->width * rx->zoom;
+  float *new_samples = g_new(float, new_pixels);
+  rx->hz_per_pixel = (double) rx->sample_rate / (double) new_pixels;
   if (rx->zoom == 1) {
     rx->pan = 0;
   } else {
@@ -1649,16 +1662,21 @@ void rx_update_zoom(RECEIVER *rx) {
       long long min_frequency = vfo[vfo_id].frequency - (long long)(rx->sample_rate / 2);
       rx->pan = ((vfo[vfo_id].ctun_frequency - min_frequency) / rx->hz_per_pixel) - (rx->width / 2);
       if (rx->pan < 0) { rx->pan = 0; }
-      if (rx->pan > (rx->pixels - rx->width)) { rx->pan = rx->pixels - rx->width; }
+      if (rx->pan > (new_pixels - rx->width)) { rx->pan = new_pixels - rx->width; }
     } else {
-      rx->pan = (rx->pixels / 2) - (rx->width / 2);
+      rx->pan = (new_pixels / 2) - (rx->width / 2);
     }
   }
-  if (rx->pixel_samples != NULL) {
-    g_free(rx->pixel_samples);
-  }
-  rx->pixel_samples = g_new(float, rx->pixels);
+  g_free(rx->pixel_samples);
+  rx->pixel_samples = new_samples;
+  rx->pixels = new_pixels;
   rx_set_analyzer(rx);
+}
+
+void rx_update_zoom(RECEIVER *rx) {
+  g_mutex_lock(&rx->display_mutex);
+  rx_update_zoom_locked(rx);
+  g_mutex_unlock(&rx->display_mutex);
 }
 
 void rx_set_filter(RECEIVER *rx) {
@@ -1753,10 +1771,12 @@ void rx_change_sample_rate(RECEIVER *rx, int sample_rate) {
   // feedback and *must* then return (rx->id is not a WDSP channel!)
   //
   if (rx->id == PS_RX_FEEDBACK && protocol == ORIGINAL_PROTOCOL) {
+    g_mutex_lock(&rx->display_mutex);
     rx->pixels = duplex ? 4 * tx_dialog_width : rx->width;
     g_free(rx->pixel_samples);
     rx->pixel_samples = g_new(float, rx->pixels);
     rx_set_analyzer(rx);
+    g_mutex_unlock(&rx->display_mutex);
     t_print("%s: PS RX FEEDBACK: id=%d rate=%d buffer_size=%d output_samples=%d\n",
             __func__, rx->id, rx->sample_rate, rx->buffer_size, rx->output_samples);
     g_mutex_unlock(&rx->mutex);

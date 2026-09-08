@@ -417,5 +417,6 @@ extern void   rx_set_squelch(const RECEIVER *rx);
 
 extern void   rx_vfo_changed(RECEIVER *rx);
 extern void   rx_update_zoom(RECEIVER *rx);
+extern void   rx_update_zoom_locked(RECEIVER *rx);
 
 #endif

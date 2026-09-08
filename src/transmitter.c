@@ -295,12 +295,12 @@ void tx_reconfigure(TRANSMITTER *tx, int pixels, int width, int height) {
     g_mutex_unlock(&tx->display_mutex);
     if (protocol == ORIGINAL_PROTOCOL || protocol == NEW_PROTOCOL) {
       RECEIVER *rx = receiver[PS_RX_FEEDBACK];
-      g_mutex_lock(&rx->mutex);
+      g_mutex_lock(&rx->display_mutex);
       rx->pixels = pixels;
       g_free(rx->pixel_samples);
       rx->pixel_samples = g_new(float, rx->pixels);
       rx_set_analyzer(rx);
-      g_mutex_unlock(&rx->mutex);
+      g_mutex_unlock(&rx->display_mutex);
     }
   }
   gtk_widget_set_size_request(tx->panadapter, width, height);

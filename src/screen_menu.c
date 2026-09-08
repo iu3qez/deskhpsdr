@@ -114,6 +114,11 @@ void schedule_apply(void) {
 static void cleanup(void) {
   if (dialog != NULL) {
     GtkWidget *tmp = dialog;
+    if (apply_timeout != 0) {
+      g_source_remove(apply_timeout);
+      apply_timeout = 0;
+      apply(NULL);
+    }
     dialog = NULL;
     gtk_widget_destroy(tmp);
     sub_menu = NULL;
