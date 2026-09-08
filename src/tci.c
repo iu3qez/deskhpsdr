@@ -113,6 +113,34 @@ static int tci_cw_macros_delay_ms = 10;
 static gint tci_iq_stream_clients = 0;
 static int tci_iq_stream_sample_rate = 0;
 
+//
+// Spectrum stream (KTD3).
+//
+// rx_update_display() copies rx->pixel_samples and the KTD2 mapping into a
+// private per-receiver snapshot while rx->display_mutex is held, then calls
+// the delivery hook once the mutex is released: display_mutex is never nested
+// inside tci_mutex. tci_spectrum_clients mirrors tci_iq_stream_clients; while
+// it is zero every hook returns on its first line, so a server with no
+// spectrum subscriber adds nothing to the display cycle (R1).
+//
+typedef struct _tci_spectrum_snapshot {
+  float *pixels;          // private copy of rx->pixel_samples
+  int count;              // valid entries in "pixels"
+  int capacity;           // entries allocated in "pixels"
+  int sample_rate;        // rx->sample_rate at copy time
+  double hz_per_pixel;    // width of one bin
+  long long low_hz;       // absolute frequency of pixels[0]
+  double soffset;         // dB correction of the local panadapter
+  guint32 frame;          // per receiver frame counter, free to wrap
+  int valid;              // 1 once a complete snapshot has been taken
+} TCI_SPECTRUM_SNAPSHOT;
+
+static gint tci_spectrum_clients = 0;
+static TCI_SPECTRUM_SNAPSHOT tci_spectrum_snapshot[TCI_RX_AUDIO_MAX_RECEIVERS];
+static int tci_spectrum_displaying[TCI_RX_AUDIO_MAX_RECEIVERS];
+static int tci_spectrum_display_fps[TCI_RX_AUDIO_MAX_RECEIVERS];
+static int tci_spectrum_state_ready = 0;
+
 typedef enum {
   TCI_TX_CLEAR_NONE = 0,
   TCI_TX_CLEAR_AUDIO,
@@ -443,6 +471,7 @@ void tci_send_stop_and_flush(void) {
   tci_set_locks_clear_all();
   g_mutex_unlock(&tci_mutex);
   g_atomic_int_set(&tci_iq_stream_clients, 0);
+  g_atomic_int_set(&tci_spectrum_clients, 0);
   lws_cancel_service(tci_lws_context);
   for (int i = 0; i < 20 && tci_has_clients(); i++) {
     lws_cancel_service(tci_lws_context);
@@ -486,6 +515,7 @@ void shutdown_tci(void) {
     tci_set_locks_clear_all();
     g_mutex_unlock(&tci_mutex);
     g_atomic_int_set(&tci_iq_stream_clients, 0);
+    g_atomic_int_set(&tci_spectrum_clients, 0);
     lws_cancel_service(tci_lws_context);
     for (int i = 0; i < 50 && tci_has_clients(); i++) {
       lws_cancel_service(tci_lws_context);
@@ -723,6 +753,120 @@ void tci_rx_iq_block(RECEIVER *rx, const double *iq, guint frames) {
     }
   }
   g_list_free(clients);
+}
+
+//
+// U3 fills this in: per-client decimation, quantization and slot enqueue.
+//
+// It is reached from tci_rx_spectrum_deliver(), that is AFTER
+// rx_update_display() has released rx->display_mutex, so it is free to take
+// tci_mutex and to talk to lws. It must never be called with display_mutex
+// held: that is the whole reason the copy and the delivery are two hooks.
+//
+static void tci_spectrum_snapshot_ready(int rx_id) {
+  (void) rx_id;
+}
+
+//
+// U3 fills this in: emit spectrum_state:<rx>,<state>; to the clients
+// subscribed to this receiver. The subscription survives the pause (R9).
+//
+static void tci_spectrum_state_changed(int rx_id, int state) {
+  (void) rx_id;
+  (void) state;
+}
+
+//
+// U4 fills this in: recompute fps_eff = min(requested fps, rx->fps) and emit
+// spectrum_fps:<rx>,<fps>; to the clients whose effective rate moved (R10).
+//
+static void tci_spectrum_fps_changed(int rx_id) {
+  (void) rx_id;
+}
+
+static void tci_spectrum_state_init(void) {
+  if (tci_spectrum_state_ready) { return; }
+  for (int i = 0; i < TCI_RX_AUDIO_MAX_RECEIVERS; i++) {
+    tci_spectrum_displaying[i] = -1;   // no state notified yet
+    tci_spectrum_display_fps[i] = -1;  // no display rate seen yet
+  }
+  tci_spectrum_state_ready = 1;
+}
+
+//
+// Producer, called by rx_update_display() right after rx_get_pixels() returned
+// rc != 0 and while rx->display_mutex is still held. Everything it does under
+// that lock is one memcpy plus a handful of scalars (KTD3).
+//
+void tci_rx_spectrum_block(RECEIVER *rx) {
+  TCI_SPECTRUM_SNAPSHOT *snap;
+  RX_PAN_MAPPING map;
+  int count;
+  if (!g_atomic_int_get(&tci_spectrum_clients)) { return; }
+  if (rx == NULL || rx->pixel_samples == NULL) { return; }
+  if (rx->id < 0 || rx->id >= TCI_RX_AUDIO_MAX_RECEIVERS) { return; }
+  count = rx->pixels;
+  if (count <= 0) { return; }
+  snap = &tci_spectrum_snapshot[rx->id];
+  if (count > snap->capacity) {
+    //
+    // A local zoom or sample rate change grew rx->pixels. The private buffer
+    // follows, and never shrinks again, so a zoom sweep reallocates at most
+    // once per size. It is deliberately kept for the lifetime of the process:
+    // freeing it on unsubscribe would race with a display cycle already inside
+    // this function, and it is a few hundred kB at the largest zoom.
+    //
+    g_free(snap->pixels);
+    snap->pixels = g_new(float, (gsize) count);
+    snap->capacity = count;
+  }
+  memcpy(snap->pixels, rx->pixel_samples, (size_t) count * sizeof(float));
+  rx_panadapter_get_mapping(rx, &map);
+  snap->count = count;
+  snap->sample_rate = rx->sample_rate;
+  snap->hz_per_pixel = map.hz_per_pixel;
+  snap->low_hz = map.low_hz;
+  snap->soffset = map.soffset;
+  snap->frame++;
+  snap->valid = 1;
+}
+
+//
+// Second half of the producer, called by rx_update_display() after
+// g_mutex_unlock(&rx->display_mutex). Cheap and dormant like the first half.
+//
+void tci_rx_spectrum_deliver(RECEIVER *rx) {
+  if (!g_atomic_int_get(&tci_spectrum_clients)) { return; }
+  if (rx == NULL) { return; }
+  if (rx->id < 0 || rx->id >= TCI_RX_AUDIO_MAX_RECEIVERS) { return; }
+  if (!tci_spectrum_snapshot[rx->id].valid) { return; }
+  tci_spectrum_snapshot_ready(rx->id);
+}
+
+//
+// Called by rx_set_displaying(). That function also runs with an unchanged
+// displaying state (local fps change, receiver creation), so only a real
+// transition is an event for the subscribed clients (R9). The bookkeeping
+// itself is unconditional and costs two integer compares: it has to stay
+// correct across periods with no subscriber at all, otherwise a client that
+// subscribes while the display is paused would miss the next resume.
+//
+void tci_rx_displaying_changed(RECEIVER *rx) {
+  int state;
+  int fps;
+  if (rx == NULL) { return; }
+  if (rx->id < 0 || rx->id >= TCI_RX_AUDIO_MAX_RECEIVERS) { return; }
+  tci_spectrum_state_init();
+  state = rx->displaying ? 1 : 0;
+  fps = rx->fps;
+  if (tci_spectrum_displaying[rx->id] != state) {
+    tci_spectrum_displaying[rx->id] = state;
+    tci_spectrum_state_changed(rx->id, state);
+  }
+  if (tci_spectrum_display_fps[rx->id] != fps) {
+    tci_spectrum_display_fps[rx->id] = fps;
+    tci_spectrum_fps_changed(rx->id);
+  }
 }
 
 static GList *tci_clients_snapshot(void) {

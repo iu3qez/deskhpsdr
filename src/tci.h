@@ -71,5 +71,15 @@ void tci_begin_tune_transition(void);
 void tci_end_tune_transition(void);
 int tci_is_tune_transition(void);
 void tci_rx_iq_block(RECEIVER *rx, const double *iq, guint frames);
+//
+// Spectrum stream producer, driven by the display cycle (KTD3).
+// tci_rx_spectrum_block() is called with rx->display_mutex held and only
+// copies; tci_rx_spectrum_deliver() is called after the unlock and does the
+// per-client work. tci_rx_displaying_changed() reports a paused or resumed
+// display (R9). All three return immediately while nobody is subscribed.
+//
+void tci_rx_spectrum_block(RECEIVER *rx);
+void tci_rx_spectrum_deliver(RECEIVER *rx);
+void tci_rx_displaying_changed(RECEIVER *rx);
 void tci_rx_audio_sample(RECEIVER *rx, float left, float right);
 void tci_rx_filter_band_changed(int receiver_id);

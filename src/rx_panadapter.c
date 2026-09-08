@@ -192,6 +192,67 @@ static int rx_panadapter_effective_vfo_id(const RECEIVER *rx) {
   return rx_panadapter_diversity_rx_active(rx) ? 0 : (rx != NULL ? rx->id : 0);
 }
 
+//
+// Single owner of the pixel -> Hz and raw -> dBm mapping of a receiver (KTD2).
+//
+// Anything that has to place a bin of rx->pixel_samples on an absolute
+// frequency, or to turn a raw bin into dBm, goes through here: the local
+// panadapter trace and the TCI spectrum stream must agree bin by bin.
+// The conventions are the ones the draw code below used inline:
+//
+//   - the effective VFO is the one the panadapter shows (VFO A while the
+//     diversity receiver is active on RX2, rx->id otherwise);
+//   - in CWU/CWL the panadapter centre stays on the VFO frequency and the
+//     spectrum pixels move by -/+ the sidetone frequency instead;
+//   - AM/SAM add the mode DC offset. The draw code applies it as a cairo
+//     translation of pan_display_shift pixels, so it is folded into low_hz
+//     here to keep one absolute mapping for the trace and for a remote bin;
+//   - soffset carries the whole gain/attenuation correction in dB, including
+//     the ALEX and CHARLY25 terms.
+//
+void rx_panadapter_get_mapping(const RECEIVER *rx, RX_PAN_MAPPING *map) {
+  if (map == NULL) {
+    return;
+  }
+  memset(map, 0, sizeof(*map));
+  if (rx == NULL) {
+    return;
+  }
+  int vfo_id = rx_panadapter_effective_vfo_id(rx);
+  int mode = vfo[vfo_id].mode;
+  long long frequency = vfo[vfo_id].frequency;
+  long long cw_shift = 0LL;
+  const BAND *band = band_get_band(vfo[vfo_id].band);
+  int calib = rx_gain_calibration - band->gain;
+  double soffset = (double) calib + (double) adc[rx->adc].attenuation - adc[rx->adc].gain;
+  if (filter_board == ALEX && rx->adc == 0) {
+    soffset += (double)(10 * rx->alex_attenuation - 20 * rx->preamp);
+  }
+  if (filter_board == CHARLY25 && rx->adc == 0) {
+    soffset += (double)(12 * rx->alex_attenuation - 18 * rx->preamp - 18 * rx->dither);
+  }
+  //
+  // The CW frequency is the VFO frequency and the center of the spectrum
+  // then is at the VFO frequency plus or minus the sidetone frequency. However we
+  // will keep the center of the PANADAPTER at the VFO frequency and shift the
+  // pixels of the spectrum.
+  //
+  if (mode == modeCWU) {
+    frequency -= cw_keyer_sidetone_frequency;
+    cw_shift = (long long) cw_keyer_sidetone_frequency;
+  } else if (mode == modeCWL) {
+    frequency += cw_keyer_sidetone_frequency;
+    cw_shift = - (long long) cw_keyer_sidetone_frequency;
+  }
+  map->vfo_id = vfo_id;
+  map->center_hz = frequency;
+  map->cw_shift_hz = cw_shift;
+  map->dc_offset_hz = rx_get_mode_dc_offset(vfo_id);
+  map->hz_per_pixel = rx->hz_per_pixel;
+  map->low_hz = frequency - ((long long) rx->sample_rate / 2LL) + map->dc_offset_hz;
+  map->soffset = soffset;
+}
+
 static void rx_panadapter_reset_noisefloor(RECEIVER *rx) {
   if (rx == NULL) {
     return;
@@ -1378,9 +1439,17 @@ void rx_panadapter_update(RECEIVER *rx) {
   cairo_rectangle(cr, 0, 0, mywidth, myheight);
   cairo_fill(cr);
   double HzPerPixel = rx->hz_per_pixel;  // need this many times
-  int vfo_id = rx_panadapter_effective_vfo_id(rx);
+  //
+  // The frequency and dB conventions of the trace live in exactly one place,
+  // rx_panadapter_get_mapping(), which the TCI spectrum producer shares so a
+  // remote bin and the local trace coincide (KTD2). Everything below only
+  // consumes what it returns.
+  //
+  RX_PAN_MAPPING map;
+  rx_panadapter_get_mapping(rx, &map);
+  int vfo_id = map.vfo_id;
   int mode = vfo[vfo_id].mode;
-  long long frequency = vfo[vfo_id].frequency;
+  long long frequency = map.center_hz;
   int vfoband = vfo[vfo_id].band;
   long long offset;
   double pan_display_shift = 0.0;
@@ -1390,8 +1459,7 @@ void rx_panadapter_update(RECEIVER *rx) {
   // switchable preamps.
   //
   const BAND *band = band_get_band(vfoband);
-  int calib = rx_gain_calibration - band->gain;
-  soffset = (double) calib + (double) adc[rx->adc].attenuation - adc[rx->adc].gain;
+  soffset = map.soffset;
   //
   // offset is used to calculate the filter edges. They move  with the RIT value
   //
@@ -1400,29 +1468,19 @@ void rx_panadapter_update(RECEIVER *rx) {
   } else {
     offset = vfo[vfo_id].rit_enabled ? vfo[vfo_id].rit : 0;
   }
-  if (filter_board == ALEX && rx->adc == 0) {
-    soffset += (double)(10 * rx->alex_attenuation - 20 * rx->preamp);
-  }
-  if (filter_board == CHARLY25 && rx->adc == 0) {
-    soffset += (double)(12 * rx->alex_attenuation - 18 * rx->preamp - 18 * rx->dither);
-  }
   long long half = (long long) rx->sample_rate / 2LL;
   double vfofreq = ((double) half / HzPerPixel) - (double) rx->pan;
-  //
   //
   // The CW frequency is the VFO frequency and the center of the spectrum
   // then is at the VFO frequency plus or minus the sidetone frequency. However we
   // will keep the center of the PANADAPTER at the VFO frequency and shift the
-  // pixels of the spectrum.
+  // pixels of the spectrum: map.center_hz already carries that shift, here it
+  // only has to move the pixel origin of the drawing.
   //
-  if (mode == modeCWU) {
-    frequency -= cw_keyer_sidetone_frequency;
-    vfofreq += (double) cw_keyer_sidetone_frequency / HzPerPixel;
-  } else if (mode == modeCWL) {
-    frequency += cw_keyer_sidetone_frequency;
-    vfofreq -= (double) cw_keyer_sidetone_frequency / HzPerPixel;
+  if (map.cw_shift_hz != 0LL) {
+    vfofreq += (double) map.cw_shift_hz / HzPerPixel;
   }
-  pan_display_shift = (double) rx_get_mode_dc_offset(vfo_id) / HzPerPixel;
+  pan_display_shift = (double) map.dc_offset_hz / HzPerPixel;
   double min_display = (double) frequency - (double) half + ((double) rx->pan * HzPerPixel);
   double max_display = min_display + ((double) mywidth * HzPerPixel);
   if (vfoband == band60 && band_channels_60m != NULL && region > 0) {
