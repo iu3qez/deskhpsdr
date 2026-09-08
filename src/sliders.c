@@ -397,6 +397,32 @@ void set_attenuation_value(double value) {
   }
 }
 
+//
+// Refresh the attenuation and RF gain sliders from the ADC of the active
+// receiver, without ever opening a popup slider.  Used by remote control
+// paths (TCI) which change adc[].attenuation or adc[].gain directly and must
+// not pop up a slider on the local GUI.  Main thread only.
+//
+void sliders_update_att_gain(void) {
+  if (!display_sliders || active_receiver == NULL) { return; }
+  if (filter_board == CHARLY25) {
+    update_c25_att();
+    return;
+  }
+  if (attenuation_scale != NULL) {
+    sliders_signal_handler_block(G_OBJECT(attenuation_scale), attenuation_scale_signal_id);
+    if (GTK_IS_SPIN_BUTTON(attenuation_scale)) {
+      gtk_spin_button_set_value(GTK_SPIN_BUTTON(attenuation_scale),
+                                (double) adc[active_receiver->adc].attenuation);
+    } else if (GTK_IS_RANGE(attenuation_scale)) {
+      gtk_range_set_value(GTK_RANGE(attenuation_scale),
+                          (double) adc[active_receiver->adc].attenuation);
+    }
+    sliders_signal_handler_unblock(G_OBJECT(attenuation_scale), attenuation_scale_signal_id);
+  }
+  if (rf_gain_scale != NULL) { gtk_range_set_value(GTK_RANGE(rf_gain_scale), adc[active_receiver->adc].gain); }
+}
+
 static void attenuation_value_changed_cb(GtkWidget *widget, gpointer data) {
   (void)data;
   if (!have_rx_att) {

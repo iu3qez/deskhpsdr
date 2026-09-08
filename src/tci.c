@@ -63,6 +63,7 @@
 #include "noise_menu.h"
 #include "receiver.h"
 #include "rx_panadapter.h"
+#include "new_protocol.h"
 #include "tx_off.h"
 
 #define MAXDATASIZE     1024
@@ -219,6 +220,8 @@ typedef enum {
   TCI_SET_LOCK_FILTER,
   TCI_SET_LOCK_CW_SPEED,
   TCI_SET_LOCK_IQ_RATE,
+  TCI_SET_LOCK_RX_ATT,
+  TCI_SET_LOCK_BAND,
   TCI_SET_LOCK_COUNT
 } TCI_SET_LOCK_ID;
 
@@ -315,6 +318,30 @@ typedef struct {
   int receiver_id;
   double level_db;
 } TCI_SQL_LEVEL_UPDATE;
+
+//
+// Kind of RX front-end control the ADC of a receiver offers.  Reported
+// verbatim to the client, which must not assume a unified scale.
+//
+typedef enum {
+  TCI_ATT_KIND_NONE = 0,
+  TCI_ATT_KIND_ATT,
+  TCI_ATT_KIND_GAIN
+} TCI_ATT_KIND;
+
+typedef struct {
+  int client_seq;
+  int receiver_id;
+  int adc_id;
+  int kind;
+  int value;
+} TCI_RX_ATT_UPDATE;
+
+typedef struct {
+  int client_seq;
+  int vfo_id;
+  int band;
+} TCI_BAND_UPDATE;
 
 typedef void (*TCI_HANDLER)(CLIENT *client, const TCI_CMD *cmd);
 
@@ -704,6 +731,26 @@ static GList *tci_clients_snapshot(void) {
   clients = g_list_copy(tci_clients);
   g_mutex_unlock(&tci_mutex);
   return clients;
+}
+
+//
+// Send a text reply to a client identified by its sequence number.  A
+// callback scheduled with g_idle_add() may run after the requesting client
+// has been closed, so the CLIENT pointer must be looked up again instead of
+// being stored in the callback context.
+//
+static void tci_send_text_by_seq(int seq, const char *msg) {
+  CLIENT *target = NULL;
+  GList *clients = tci_clients_snapshot();
+  for (GList *l = clients; l != NULL; l = l->next) {
+    CLIENT *c = (CLIENT *) l->data;
+    if (c != NULL && c->running && c->seq == seq) {
+      target = c;
+      break;
+    }
+  }
+  if (target != NULL) { tci_send_text(target, msg); }
+  g_list_free(clients);
 }
 
 static void tci_cw_msg_reset_state(void) {
@@ -5320,6 +5367,269 @@ static void tci_cmd_cw_terminal(CLIENT *client, const TCI_CMD *cmd) {
   t_print("TCI%d cw_terminal=%d\n", client->seq, enabled);
 }
 
+//
+// rx_att_ex: typed pass-through of the RX front-end control of the ADC the
+// given receiver is connected to.  Attenuation and gain are properties of the
+// ADC, not of the receiver: on radios with a single ADC both receivers share
+// the same value.  The reply always carries kind, value, range, step and ADC
+// index so the client never has to guess a scale.
+//
+//   query   rx_att_ex:<rx>;
+//   reply   rx_att_ex:<rx>,<kind>,<value>,<min>,<max>,<step>,<adc>;
+//   set     rx_att_ex:<rx>,<value>;   (same reply, with the applied value)
+//
+static const char *tci_rx_att_kind_name(TCI_ATT_KIND kind) {
+  switch (kind) {
+  case TCI_ATT_KIND_ATT:
+    return "att";
+  case TCI_ATT_KIND_GAIN:
+    return "gain";
+  default:
+    return "none";
+  }
+}
+
+static TCI_ATT_KIND tci_rx_att_describe(int adc_id, int *value, int *min, int *max) {
+  if (have_rx_att) {
+    *value = adc[adc_id].attenuation;
+    *min = 0;
+    *max = 31;
+    return TCI_ATT_KIND_ATT;
+  }
+  if (have_rx_gain) {
+    *value = (int) lround(adc[adc_id].gain);
+    *min = (int) lround(adc[adc_id].min_gain);
+    *max = (int) lround(adc[adc_id].max_gain);
+    return TCI_ATT_KIND_GAIN;
+  }
+  *value = 0;
+  *min = 0;
+  *max = 0;
+  return TCI_ATT_KIND_NONE;
+}
+
+static void tci_format_rx_att(char *msg, size_t len, int rx, int adc_id) {
+  int value = 0;
+  int min = 0;
+  int max = 0;
+  TCI_ATT_KIND kind = tci_rx_att_describe(adc_id, &value, &min, &max);
+  snprintf(msg, len, "%s:%d,%s,%d,%d,%d,1,%d;",
+           tci_cmd_name("rx_att_ex", "RX_ATT_EX"), rx,
+           tci_rx_att_kind_name(kind), value, min, max, adc_id);
+}
+
+//
+// Applied on the main loop, like ext_set_af_gain(): write the ADC field
+// directly and schedule a HighPrio packet.  set_attenuation_value() and
+// set_rf_gain() must not be used here, both open a popup slider when the
+// sliders are hidden.  The reply is sent from here so it always reports the
+// value that was actually applied.
+//
+static int tci_apply_rx_att_update(void *data) {
+  TCI_RX_ATT_UPDATE *au = (TCI_RX_ATT_UPDATE *) data;
+  char msg[MAXMSGSIZE];
+  if (au == NULL) { return G_SOURCE_REMOVE; }
+  if (au->adc_id >= 0 && au->adc_id < 2) {
+    if (au->kind == TCI_ATT_KIND_ATT) {
+      adc[au->adc_id].attenuation = au->value;
+    } else if (au->kind == TCI_ATT_KIND_GAIN) {
+      adc[au->adc_id].gain = (double) au->value;
+    }
+    schedule_high_priority();
+    if (display_sliders && active_receiver != NULL && au->adc_id == active_receiver->adc) {
+      sliders_update_att_gain();
+    }
+    tci_format_rx_att(msg, sizeof(msg), au->receiver_id, au->adc_id);
+    tci_send_text_by_seq(au->client_seq, msg);
+  }
+  g_free(au);
+  return G_SOURCE_REMOVE;
+}
+
+static void tci_cmd_rx_att_ex(CLIENT *client, const TCI_CMD *cmd) {
+  char msg[MAXMSGSIZE];
+  TCI_RX_ATT_UPDATE *au;
+  TCI_ATT_KIND kind;
+  int rx;
+  int adc_id;
+  int value = 0;
+  int min = 0;
+  int max = 0;
+  int requested;
+  if (client == NULL || cmd == NULL || cmd->argc < 1) { return; }
+  rx = tci_int(cmd->argv[0], -1);
+  if (rx < 0 || rx > 1 || rx >= receivers || receiver[rx] == NULL) {
+    t_print("TCI%d rx_att_ex ignored: invalid receiver %d\n", client->seq, rx);
+    return;
+  }
+  adc_id = receiver[rx]->adc;
+  if (adc_id < 0 || adc_id > 1) {
+    t_print("TCI%d rx_att_ex ignored: receiver %d has invalid ADC %d\n", client->seq, rx, adc_id);
+    return;
+  }
+  kind = tci_rx_att_describe(adc_id, &value, &min, &max);
+  if (cmd->argc < 2 || cmd->argv[1] == NULL || cmd->argv[1][0] == '\0') {
+    tci_format_rx_att(msg, sizeof(msg), rx, adc_id);
+    tci_send_text(client, msg);
+    return;
+  }
+  if (kind == TCI_ATT_KIND_NONE) {
+    t_print("TCI%d rx_att_ex set ignored: ADC %d has neither attenuator nor RX gain\n",
+            client->seq, adc_id);
+    tci_format_rx_att(msg, sizeof(msg), rx, adc_id);
+    tci_send_text(client, msg);
+    return;
+  }
+  requested = tci_int(cmd->argv[1], value);
+  if (requested < min || requested > max) {
+    t_print("TCI%d rx_att_ex ignored: %d out of range %d..%d for ADC %d\n",
+            client->seq, requested, min, max, adc_id);
+    tci_format_rx_att(msg, sizeof(msg), rx, adc_id);
+    tci_send_text(client, msg);
+    return;
+  }
+  if (!tci_set_lock_allowed(client, TCI_SET_LOCK_RX_ATT)) {
+    tci_format_rx_att(msg, sizeof(msg), rx, adc_id);
+    tci_send_text(client, msg);
+    return;
+  }
+  au = g_new0(TCI_RX_ATT_UPDATE, 1);
+  au->client_seq = client->seq;
+  au->receiver_id = rx;
+  au->adc_id = adc_id;
+  au->kind = (int) kind;
+  au->value = requested;
+  g_idle_add(tci_apply_rx_att_update, au);
+}
+
+//
+// band_ex: band change through the band stack, addressed by BAND.title
+// ("20", "40", "160", "GEN", ...) which is stable across regions, unlike the
+// band enum index.
+//
+//   query   band_ex:<rx>;             reply band_ex:<rx>,<title>;
+//   set     band_ex:<rx>,<title>;     reply band_ex:<rx>,<title>;
+//   set     band_ex:<rx>,<title>,next;
+//   error   band_ex:<rx>,<title>,error;
+//
+static int tci_band_lookup(const char *title) {
+  if (title == NULL || title[0] == '\0') { return -1; }
+  for (int b = 0; b < BANDS + XVTRS; b++) {
+    const BAND *band = band_get_band(b);
+    if (band == NULL || band->title[0] == '\0') { continue; }
+    if (g_ascii_strcasecmp(band->title, title) == 0) { return b; }
+  }
+  return -1;
+}
+
+static void tci_send_band_ex(CLIENT *client, int rx, const char *title) {
+  char msg[MAXMSGSIZE];
+  snprintf(msg, sizeof(msg), "%s:%d,%s;", tci_cmd_name("band_ex", "BAND_EX"), rx,
+           title != NULL ? title : "");
+  tci_send_text(client, msg);
+}
+
+static void tci_send_band_ex_error(CLIENT *client, int rx, const char *title) {
+  char msg[MAXMSGSIZE];
+  snprintf(msg, sizeof(msg), "%s:%d,%s,error;", tci_cmd_name("band_ex", "BAND_EX"), rx,
+           title != NULL ? title : "");
+  tci_send_text(client, msg);
+}
+
+//
+// vfo_band_changed() must run on the main loop.  tci_apply_in_progress is a
+// synchronous flag, so the begin/end pair belongs inside the callback, not
+// around g_idle_add().  Since vfo_vfos_changed() skips the TCI notification
+// while that flag is set, the broadcast is issued explicitly afterwards, the
+// same way tci_set_vfo() does with its own broadcasts.
+//
+static int tci_apply_band_update(void *data) {
+  TCI_BAND_UPDATE *bu = (TCI_BAND_UPDATE *) data;
+  char msg[MAXMSGSIZE];
+  const BAND *band;
+  if (bu == NULL) { return G_SOURCE_REMOVE; }
+  tci_begin_apply();
+  vfo_band_changed(bu->vfo_id, bu->band);
+  tci_end_apply();
+  tci_vfos_changed();
+  band = band_get_band(vfo[bu->vfo_id].band);
+  snprintf(msg, sizeof(msg), "%s:%d,%s;", tci_cmd_name("band_ex", "BAND_EX"), bu->vfo_id,
+           band != NULL ? band->title : "");
+  tci_send_text_by_seq(bu->client_seq, msg);
+  g_free(bu);
+  return G_SOURCE_REMOVE;
+}
+
+static void tci_cmd_band_ex(CLIENT *client, const TCI_CMD *cmd) {
+  TCI_BAND_UPDATE *bu;
+  const BAND *band;
+  const BANDSTACK *bandstack;
+  const char *title;
+  int rx;
+  int b;
+  int next = 0;
+  long long f;
+  if (client == NULL || cmd == NULL || cmd->argc < 1) { return; }
+  //
+  // <rx> maps to a VFO exactly like tci_set_vfo(): 0 = VFO A, 1 = VFO B.
+  //
+  rx = tci_int(cmd->argv[0], -1);
+  if (rx < 0 || rx > 1 || rx >= receivers) {
+    t_print("TCI%d band_ex ignored: invalid receiver %d\n", client->seq, rx);
+    return;
+  }
+  if (cmd->argc < 2 || cmd->argv[1] == NULL || cmd->argv[1][0] == '\0') {
+    band = band_get_band(vfo[rx].band);
+    tci_send_band_ex(client, rx, band != NULL ? band->title : "");
+    return;
+  }
+  title = cmd->argv[1];
+  b = tci_band_lookup(title);
+  if (b < 0) {
+    t_print("TCI%d band_ex ignored: unknown band title %s\n", client->seq, title);
+    tci_send_band_ex_error(client, rx, title);
+    return;
+  }
+  if (cmd->argc >= 3 && cmd->argv[2] != NULL && g_ascii_strcasecmp(cmd->argv[2], "next") == 0) {
+    next = 1;
+  }
+  band = band_get_band(b);
+  bandstack = bandstack_get_bandstack(b);
+  if (band == NULL || bandstack == NULL || bandstack->entries <= 0) {
+    tci_send_band_ex_error(client, rx, title);
+    return;
+  }
+  if (b != vfo[rx].band) {
+    //
+    // Same check vfo_band_changed() does before switching band, but done
+    // here: vfo_band_changed() applies drive and tune drive of the new band
+    // before giving up, so an out-of-range band must never reach it.
+    //
+    f = bandstack->entry[bandstack->current_entry].frequency;
+    f -= (band->frequencyLO + band->errorLO);
+    if (radio == NULL || f < radio->frequency_min || f > radio->frequency_max) {
+      t_print("TCI%d band_ex ignored: band %s bandstack frequency %lld out of radio limits\n",
+              client->seq, title, f);
+      tci_send_band_ex_error(client, rx, title);
+      return;
+    }
+  } else if (!next) {
+    // Same band without "next": no effect, just report the current band.
+    tci_send_band_ex(client, rx, band->title);
+    return;
+  }
+  if (!tci_set_lock_allowed(client, TCI_SET_LOCK_BAND)) {
+    band = band_get_band(vfo[rx].band);
+    tci_send_band_ex(client, rx, band != NULL ? band->title : "");
+    return;
+  }
+  bu = g_new0(TCI_BAND_UPDATE, 1);
+  bu->client_seq = client->seq;
+  bu->vfo_id = rx;
+  bu->band = b;
+  g_idle_add(tci_apply_band_update, bu);
+}
+
 static void tci_cmd_stop(CLIENT *client, const TCI_CMD *cmd) {
   TCI_TX_OWNER_MODE owner_mode = TCI_TX_OWNER_NONE;
   int abort_rtty = 0;
@@ -5429,6 +5739,8 @@ static const TCI_DISPATCH tci_dispatch[] = {
   { "cw_macros_delay",   0,  1, tci_cmd_cw_macros_delay },
   { "cw_macros_speed_up",   1,  1, tci_cmd_cw_macros_speed_up },
   { "cw_macros_speed_down", 1,  1, tci_cmd_cw_macros_speed_down },
+  { "rx_att_ex",         1,  2, tci_cmd_rx_att_ex },
+  { "band_ex",           1,  3, tci_cmd_band_ex },
   { "stop",              0,  0, tci_cmd_stop },
   { NULL,                0,  0, NULL }
 };
