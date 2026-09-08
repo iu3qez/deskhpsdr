@@ -984,6 +984,19 @@ void vfo_apply_mode_settings(RECEIVER *rx) {
   }
 }
 
+//
+// Whether the current band-stack entry of band b lies inside the frequency
+// range of the radio. vfo_band_changed() refuses the switch otherwise, and
+// remote control paths ask here first so they can report the refusal.
+//
+int vfo_band_change_allowed(int b) {
+  const BAND *band = band_get_band(b);
+  const BANDSTACK *bandstack = bandstack_get_bandstack(b);
+  long long f = bandstack->entry[bandstack->current_entry].frequency;
+  f -= (band->frequencyLO + band->errorLO);
+  return !(f < radio->frequency_min || f > radio->frequency_max);
+}
+
 void vfo_band_changed(int id, int b) {
   const BAND *band;
   BANDSTACK *bandstack;
@@ -1013,9 +1026,7 @@ void vfo_band_changed(int id, int b) {
     }
     band = band_get_band(b);
     bandstack = bandstack_get_bandstack(b);
-    long long f = bandstack->entry[bandstack->current_entry].frequency;
-    f -= (band->frequencyLO + band->errorLO);
-    if (f < radio->frequency_min || f > radio->frequency_max) {
+    if (!vfo_band_change_allowed(b)) {
       return;
     }
     disable_split_for_band_change(id);

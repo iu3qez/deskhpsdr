@@ -864,6 +864,36 @@ static int tci_spectrum_slot_pending(const CLIENT *client) {
 }
 
 //
+// True when this client has anything left to write: a queued RESPONSE in the
+// FIFO or a spectrum frame in one of its slots. The caller holds tci_mutex.
+//
+static int tci_client_write_pending(const CLIENT *client) {
+  if (client == NULL) { return 0; }
+
+  if (client->lws_tx_queue != NULL && !g_queue_is_empty(client->lws_tx_queue)) { return 1; }
+
+  return tci_spectrum_slot_pending(client);
+}
+
+//
+// Recompute the served rate of one subscription from the ladder level, the
+// request and the local display rate; apply it when it moved and restart the
+// cadence. Returns the new fps_eff, or -1 when nothing changed. The caller
+// holds tci_mutex. Shared by the producer and the display-rate path so the
+// two can never disagree.
+//
+static int tci_spectrum_apply_fps_eff(CLIENT *client, int rx_id, int level, int display_fps) {
+  int fps_eff = tci_spectrum_fps_step(
+                  tci_spectrum_ladder_fps(level, client->spectrum_fps_req[rx_id]), display_fps);
+
+  if (fps_eff == client->spectrum_fps_eff[rx_id]) { return -1; }
+
+  client->spectrum_fps_eff[rx_id] = fps_eff;
+  client->spectrum_phase[rx_id] = 0;   // the new cadence starts here
+  return fps_eff;
+}
+
+//
 // Send one text message to every client subscribed to this receiver. Clients
 // which never subscribed get nothing at all (R1).
 //
@@ -960,14 +990,8 @@ static void tci_spectrum_snapshot_ready(int rx_id) {
                                        client->spectrum_slot_replaced[rx_id], now_us);
 
     if (level != prev_level) {
-      fps_eff = tci_spectrum_fps_step(
-                  tci_spectrum_ladder_fps(level, client->spectrum_fps_req[rx_id]), display_fps);
-
-      if (fps_eff != client->spectrum_fps_eff[rx_id]) {
-        client->spectrum_fps_eff[rx_id] = fps_eff;
-        client->spectrum_phase[rx_id] = 0;   // the new cadence starts here
-        fps_changed = 1;
-      }
+      fps_eff = tci_spectrum_apply_fps_eff(client, rx_id, level, display_fps);
+      fps_changed = (fps_eff >= 0);
     }
 
     // clamped again here so "values" and "bins" cannot be overrun whatever
@@ -1112,17 +1136,9 @@ static void tci_spectrum_fps_changed(int rx_id) {
     g_mutex_lock(&tci_mutex);
 
     if (client->spectrum_enabled[rx_id]) {
-      // the ladder level is part of the request seen by the step function,
-      // so this path and the producer cannot disagree on fps_eff (U4)
-      fps_eff = tci_spectrum_fps_step(
-                  tci_spectrum_ladder_fps(client->spectrum_ladder[rx_id].level,
-                                          client->spectrum_fps_req[rx_id]), display_fps);
-
-      if (fps_eff != client->spectrum_fps_eff[rx_id]) {
-        client->spectrum_fps_eff[rx_id] = fps_eff;
-        client->spectrum_phase[rx_id] = 0;
-        changed = 1;
-      }
+      fps_eff = tci_spectrum_apply_fps_eff(client, rx_id,
+                                           client->spectrum_ladder[rx_id].level, display_fps);
+      changed = (fps_eff >= 0);
     }
 
     g_mutex_unlock(&tci_mutex);
@@ -6065,7 +6081,6 @@ static void tci_cmd_band_ex(CLIENT *client, const TCI_CMD *cmd) {
   int rx;
   int b;
   int next = 0;
-  long long f;
   if (client == NULL || cmd == NULL || cmd->argc < 1) { return; }
   //
   // <rx> maps to a VFO exactly like tci_set_vfo(): 0 = VFO A, 1 = VFO B.
@@ -6102,11 +6117,9 @@ static void tci_cmd_band_ex(CLIENT *client, const TCI_CMD *cmd) {
     // here: vfo_band_changed() applies drive and tune drive of the new band
     // before giving up, so an out-of-range band must never reach it.
     //
-    f = bandstack->entry[bandstack->current_entry].frequency;
-    f -= (band->frequencyLO + band->errorLO);
-    if (radio == NULL || f < radio->frequency_min || f > radio->frequency_max) {
-      t_print("TCI%d band_ex ignored: band %s bandstack frequency %lld out of radio limits\n",
-              client->seq, title, f);
+    if (radio == NULL || !vfo_band_change_allowed(b)) {
+      t_print("TCI%d band_ex ignored: band %s bandstack frequency out of radio limits\n",
+              client->seq, title);
       tci_send_band_ex_error(client, rx, title);
       return;
     }
@@ -6952,9 +6965,7 @@ static int tci_lws_write_slot(CLIENT *client) {
     g_mutex_unlock(&tci_mutex);
     return -1;
   }
-  if (client->wsi != NULL &&
-      ((client->lws_tx_queue != NULL && !g_queue_is_empty(client->lws_tx_queue)) ||
-       tci_spectrum_slot_pending(client))) {
+  if (client->wsi != NULL && tci_client_write_pending(client)) {
     lws_callback_on_writable(client->wsi);
   }
   g_mutex_unlock(&tci_mutex);
@@ -7010,9 +7021,7 @@ static int tci_lws_write_queued(CLIENT *client) {
     g_mutex_unlock(&tci_mutex);
     return -1;
   }
-  if (client->wsi != NULL &&
-      ((client->lws_tx_queue != NULL && !g_queue_is_empty(client->lws_tx_queue)) ||
-       tci_spectrum_slot_pending(client))) {
+  if (client->wsi != NULL && tci_client_write_pending(client)) {
     lws_callback_on_writable(client->wsi);
   }
   g_mutex_unlock(&tci_mutex);
@@ -7264,8 +7273,7 @@ static gpointer tci_lws_server(gpointer data) {
         struct lws *wsi = NULL;
         g_mutex_lock(&tci_mutex);
         if (client != NULL && client->running && client->wsi != NULL &&
-            ((client->lws_tx_queue != NULL && !g_queue_is_empty(client->lws_tx_queue)) ||
-             tci_spectrum_slot_pending(client))) {
+            tci_client_write_pending(client)) {
           wsi = client->wsi;
         }
         g_mutex_unlock(&tci_mutex);
