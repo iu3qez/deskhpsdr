@@ -77,6 +77,7 @@
 int tci_enable = 0;
 int tci_port   = 40001;
 int tci_txonly = 0;
+char tci_bind_addr[64] = "";  // empty: listen on all interfaces
 long tci_timer = 0;
 extern gboolean tci_debug;
 
@@ -6109,11 +6110,38 @@ static gpointer tci_lws_server(gpointer data) {
   info.protocols = tci_lws_protocols;
   info.gid = -1;
   info.uid = -1;
+#if !defined(LWS_WITHOUT_EXTENSIONS)
+  //
+  // permessage-deflate (RFC7692) is offered to every client, but only the
+  // clients which negotiate it in the WebSocket handshake get compressed
+  // frames. Native TCI clients do not offer it and stay unaffected.
+  //
+  static const struct lws_extension tci_lws_extensions[] = {
+    {
+      "permessage-deflate",
+      lws_extension_callback_pm_deflate,
+      "permessage-deflate; client_no_context_takeover; client_max_window_bits"
+    },
+    { NULL, NULL, NULL }
+  };
+  info.extensions = tci_lws_extensions;
+  t_print("%s: permessage-deflate available\n", __func__);
+#else
+  t_print("%s: permessage-deflate not available in this libwebsockets build\n", __func__);
+#endif
+  //
+  // An empty tci_bind_addr means "all interfaces", which is the default.
+  // Otherwise lws accepts either an interface name or an IP address.
+  //
+  if (tci_bind_addr[0] != '\0') {
+    info.iface = tci_bind_addr;
+  }
   if (first) {
     info.options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
     first = 0;
   }
-  t_print("%s: starting TCI LWS server on port %d\n", __func__, port);
+  t_print("%s: starting TCI LWS server on %s port %d\n", __func__,
+          tci_bind_addr[0] != '\0' ? tci_bind_addr : "all interfaces", port);
   tci_lws_context = lws_create_context(&info);
   if (tci_lws_context == NULL) {
     t_print("%s: lws_create_context failed\n", __func__);

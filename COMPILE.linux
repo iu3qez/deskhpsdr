@@ -52,6 +52,19 @@ heiko@AfuPi5:~/src/deskhpsdr $ cp make.config.deskhpsdr.template make.config.des
 
 Edit THIS make.config.deskhpsdr (NOT the Makefile !!!) and set the options you want.
 
+4.1.1 Optional: permessage-deflate compression for the TCI server
+
+The TCI server only offers the WebSocket permessage-deflate extension when it is linked
+against the locally built libwebsockets, because the distribution packages are usually
+built without extension support. Install the zlib development package first
+(zlib1g-dev on Debian/Ubuntu/PiOS, zlib-devel on Fedora/openSUSE), then run:
+
+heiko@AfuPi5:~/src/deskhpsdr $ ./build-libwebsockets.sh
+
+The Makefile picks up the local libwebsockets automatically as soon as it exists.
+Without this step deskHPSDR compiles and runs as before, and logs at startup that
+permessage-deflate is not available.
+
 4.2 Compiling
 
 We can now compile deskHPSDR:

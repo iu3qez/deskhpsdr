@@ -31,6 +31,7 @@
 extern int tci_enable;
 extern int tci_port;   // usually 40001
 extern int tci_txonly; // only report TX frequency
+extern char tci_bind_addr[64]; // empty: listen on all interfaces
 
 void launch_tci(void);
 void shutdown_tci(void);

@@ -500,7 +500,7 @@ LWS_LOCAL_COMPLETE := $(and $(wildcard $(LWS_LOCAL_BUILD)/include/libwebsockets.
 ifneq ($(LWS_LOCAL_COMPLETE),)
 $(info Local libwebsockets found, using static library.)
 LWS_CFLAGS := -I./$(LWS_LOCAL_BUILD)/include
-LWS_LIBS := ./$(LWS_LOCAL_LIB)
+LWS_LIBS := ./$(LWS_LOCAL_LIB) -lz
 else
 ifeq ($(UNAME_S), Darwin)
 $(info Local libwebsockets not found, using Homebrew libwebsockets.)
