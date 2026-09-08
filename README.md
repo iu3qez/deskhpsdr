@@ -17,43 +17,43 @@ My goal was to make an more optimzed version running with focus on Desktop-OS li
 **deskHPSDR is a dedicated SDR transceiver frontend application using OpenHPSDR protocols 1 or 2 for everyday use in amateur radio. Soapy SDR and GPIO code and support is official REMOVED now.**
 
 
-| Feature                        | Current deskHPSDR version 2.7                 | Notes          |
-| -------------------------------- | ----------------------------------------------- | ---------------- |
-| TCI CAT                        | supported ✅                                  | TCI 2.0        |
-| TCI Audio                      | supported (only 48k and 24k) ✅               | TCI 2.0        |
-| TCI I/Q                        | supported (48k/96k/192k/384k) ✅              | TCI 2.0        |
-| PTT external                   | supported (via serial RTS/CTS or MIDI) ✅     |                |
-| MIDI Control                   | supported ✅                                  |                |
-| Hamlib                         | supported (with own included rigctld) ✅      |                |
-| CW                             | supported ✅                                  | via MIDI & TCI |
-| OpenHPSDR protocol 1           | supported ✅                                  |                |
-| OpenHPSDR protocol 2           | supported ✅                                  |                |
-| GPIO                           | GPIO code removed since V2.7 ❌               |                |
-| Soapy API / Soapy protocol     | Soapy code removed since V2.7 ❌              |                |
-| Hermes Lite 2 N2ADR IO board   | supported ✅                                  |                |
-| Use WDSP library ?             | yes, current 2.00 ✅                          |                |
-| Pure Signal / Pre-Distortion   | supported up to 192k samplingrate ✅          |                |
-| Noise Reduction                | NR1 - NR4 available ✅                        |                |
-| CAT over TCP                   | supported (TS2000 & PowerSDR emulation) ✅    |                |
-| integrated Client-Server Mode  | not supported ❌                              | will never come|
-| IF Mode / Panadapter mode      | not supported ❌                              | will never come|
-| Hermes Lite 2+ expansion board | supported ✅                                  |                |
-| Bright / Dark Theme support    | yes ✅                                        |                |
-| Screen Resolution              | min. 1280x600 or higher 🚨                    |                |
-| Input devices                  | Touchscreen, Mouse, Keyboard, MIDI            |                |
-| OS support (64bit OS required) | macOS (15 or higher) ✅, Linux ✅, WINDOWS ❌ |                |
-| using Virtual Environments (VE)| not supported ❌                              | use native OS  |
-| Audio layer support            | CoreAudio (macOS), PulseAudio or ALSA (Linux) |                |
-| Audio devices support          | mono,stereo (only 48kHz audio rate supported) | no resampling  |
-| TX Audio Monitor               | not supported ❌                              | will never come|
-| DX Cluster support             | yes, inclusive show Spots on RX Panadapter ✅ |                |
-| RBN support                    | yes, inclusive show Spots on RX Panadapter ✅ |                |
-| SDR TX support                 | yes, fully supported ✅                       |                |
-| Used UI framework              | GTK3                                          |                |
-| Programming language           | C, partially Objective C/Swift (macOS only)   |                |
-| Supported Compiler             | clang (recommended), gcc                      |                |
-| App Publishing                 | **Source code only, no binaries distributed** |                |
-|                                | **except macOS (digitally signed & notarized)**|                |
+| Feature                        | Current deskHPSDR version 2.7                 | Notes             |
+| -------------------------------- | ----------------------------------------------- | ------------------- |
+| TCI CAT                        | supported ✅                                  | TCI 2.0           |
+| TCI Audio                      | supported (only 48k and 24k) ✅               | TCI 2.0           |
+| TCI I/Q                        | supported (48k/96k/192k/384k) ✅              | TCI 2.0           |
+| PTT external                   | supported (via serial RTS/CTS or MIDI) ✅     |                   |
+| MIDI Control                   | supported ✅                                  |                   |
+| Hamlib                         | supported (with own included rigctld) ✅      |                   |
+| CW                             | supported ✅                                  | via MIDI & TCI    |
+| OpenHPSDR protocol 1           | supported ✅                                  |                   |
+| OpenHPSDR protocol 2           | supported ✅                                  |                   |
+| GPIO                           | GPIO code removed since V2.7 ❌               |                   |
+| Soapy API / Soapy protocol     | Soapy code removed since V2.7 ❌              |                   |
+| Hermes Lite 2 N2ADR IO board   | supported ✅                                  |                   |
+| Use WDSP library ?             | yes, current 2.10 ✅                          |                   |
+| Pure Signal / Pre-Distortion   | supported up to 192k samplingrate ✅          |                   |
+| Noise Reduction                | NR1 - NR4 + NNR available ✅                  | NNR high CPU load |
+| CAT over TCP                   | supported (TS2000 & PowerSDR emulation) ✅    |                   |
+| integrated Client-Server Mode  | not supported ❌                              | will never come.  |
+| IF Mode / Panadapter mode      | not supported ❌                              | will never come.  |
+| Hermes Lite 2+ expansion board | supported ✅                                  |                   |
+| Bright / Dark Theme support    | yes ✅                                        |                   |
+| Screen Resolution              | min. 1280x600 or higher 🚨                    |                   |
+| Input devices                  | Touchscreen, Mouse, Keyboard, MIDI            |                   |
+| OS support (64bit OS required) | macOS (15 or higher) ✅, Linux ✅, WINDOWS ❌ |                   |
+| using Virtual Environments (VE)| not supported ❌                              | use native OS     |
+| Audio layer support            | CoreAudio (macOS), PulseAudio or ALSA (Linux) |                   |
+| Audio devices support          | mono,stereo (only 48kHz audio rate supported) | no resampling     |
+| TX Audio Monitor               | not supported ❌                              | will never come.  |
+| DX Cluster support             | yes, inclusive show Spots on RX Panadapter ✅ |                   |
+| RBN support                    | yes, inclusive show Spots on RX Panadapter ✅ |                   |
+| SDR TX support                 | yes, fully supported ✅                       |                   |
+| Used UI framework              | GTK3                                          |                   |
+| Programming language           | C, partially Objective C/Swift (macOS only)   |                   |
+| Supported Compiler             | clang (recommended), gcc                      |                   |
+| App Publishing                 | **Source code only, no binaries distributed** |                   |
+|                                | **except macOS (digitally signed & notarized)**|                   |
 
 Other useful app features (availability depend from used SDR device):
 
@@ -74,6 +74,7 @@ Other useful app features (availability depend from used SDR device):
 * verified Log app compatibility: RumLogNG (using TCI) ✅
 * options for display current solar data for propagation and Greyline DX window ✅
 * Panadapter refresh rate adjustment (max. 60fps, prevent very high CPU consumption❗)
+* 3D history waterfall (higher CPU consumption +10%❗)
 * some special SDR device-specific options supported 🔥
 
 The app focus is fonie/SSB & digimodes, less CW. deskHPSDR has more added options integraded from the WDSP library like pihpsdr, especially tools for the WDSP RX and TX audio chain, and they are all user-acessible and user-adjustable (pihpsdr has many things only "hardcoded" without user-access). deskHPSDR support **max. two RX and one TX**, although some SDR hardware supports more, like the Hermes Lite 2 with up to four RX slices.
