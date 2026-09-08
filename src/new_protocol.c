@@ -217,7 +217,7 @@ static int local_pa_enable = 0;
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #define TXIQRINGBUFLEN    97920  // (85 msec)
-#define RXAUDIORINGBUFLEN 16384  // (85 msec)
+#define RXAUDIORINGBUFLEN 32768  // 8192 stereo samples, about 171 ms at 48 kHz
 
 static unsigned char *RXAUDIORINGBUF = NULL;
 static unsigned char *TXIQRINGBUF = NULL;
@@ -308,7 +308,7 @@ static volatile mybuffer *high_priority_ring[HPRIORINGBUFLEN];
 static volatile int high_priority_inptr = 0;
 static volatile int high_priority_outptr = 0;
 
-#define MICRINGBUFLEN 64
+#define MICRINGBUFLEN 128
 static volatile mybuffer *mic_line_buffer[MICRINGBUFLEN];
 static volatile int mic_inptr = 0;
 static volatile int mic_outptr = 0;
@@ -2558,6 +2558,7 @@ void new_protocol_menu_start(void) {
 
 static gpointer new_protocol_rxaudio_thread(gpointer data) {
   int nptr;
+  int catch_up = 0;
   unsigned char audiobuffer[260];
   //
   // Ideally, a RX audio buffer with 64 samples is sent every 1333 usecs.
@@ -2617,9 +2618,22 @@ static gpointer new_protocol_rxaudio_thread(gpointer data) {
       //
       // Depending on how we estimate the FIFO filling, wait
       // 1000usec, or 300 usec, or nothing, before sending
-      // out the next packet.
+      // out the next packet.  A long scheduler delay can leave
+      // a large amount of audio queued in the host ring.  In that
+      // case nominal-rate pacing can never recover the lost time,
+      // so temporarily send without the artificial delay until the
+      // host backlog has been reduced again.  Hysteresis keeps normal
+      // WDSP block bursts out of this catch-up path.
       //
-      if ((!nw_settings.is_wired && FIFO > 900.0) || (nw_settings.is_wired && FIFO > 500.0)) {
+      int queued_bytes = rxaudio_inptr - rxaudio_outptr;
+      if (queued_bytes < 0) { queued_bytes += RXAUDIORINGBUFLEN; }
+      if (!catch_up && queued_bytes >= (RXAUDIORINGBUFLEN / 2)) {
+        catch_up = 1;
+      } else if (catch_up && queued_bytes <= (RXAUDIORINGBUFLEN / 4)) {
+        catch_up = 0;
+      }
+      if (!catch_up &&
+          ((!nw_settings.is_wired && FIFO > 900.0) || (nw_settings.is_wired && FIFO > 500.0))) {
         // Wait about 1000 usec before sending the next packet.
         ts.tv_nsec += 1000000;
         if (ts.tv_nsec > 999999999) {
@@ -2627,7 +2641,8 @@ static gpointer new_protocol_rxaudio_thread(gpointer data) {
           ts.tv_nsec -= 1000000000;
         }
         clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL);
-      } else if ((!nw_settings.is_wired && FIFO > 450.0) || (nw_settings.is_wired && FIFO > 250.0)) {
+      } else if (!catch_up &&
+                 ((!nw_settings.is_wired && FIFO > 450.0) || (nw_settings.is_wired && FIFO > 250.0))) {
         // Wait about 300 usec before sending the next packet.
         ts.tv_nsec += 300000;
         if (ts.tv_nsec > 999999999) {

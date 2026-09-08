@@ -60,6 +60,8 @@ static volatile gint output_ring_starved[8] = { 0 };
 static atomic_uint rx_ring_diag_underruns[8];
 static atomic_uint rx_ring_diag_low_corrections[8];
 static atomic_uint rx_ring_diag_high_corrections[8];
+static double rx_ring_consumer_phase[8];
+static gboolean rx_ring_consumer_catchup[8];
 
 guint64 audio_get_xrun_count(void) {
   return (guint64) g_atomic_int_get(&audio_xrun_count);
@@ -116,13 +118,13 @@ static float audio_test_sample_for_frame(int frame) {
 
 #define RX_LAT_LOW            768
 #define RX_LAT_TARGET        1536
-#define RX_LAT_HIGH_BASE     2304
-#define RX_LAT_GUARD          128
+#define RX_LAT_CATCHUP_STOP_MARGIN   1024
+#define RX_LAT_CATCHUP_START_MARGIN  3072
+#define RX_LAT_CATCHUP_RATE          1.01
 
-static inline void rx_audio_latency_limits(int *low, int *target, int *high_base) {
+static inline void rx_audio_latency_limits(int *low, int *target) {
   *low = RX_LAT_LOW;
   *target = RX_LAT_TARGET;
-  *high_base = RX_LAT_HIGH_BASE;
   if (protocol != NEW_PROTOCOL ||
       !g_atomic_int_get(&rx_audio_network_reserve_enabled)) {
     return;
@@ -136,8 +138,8 @@ static inline void rx_audio_latency_limits(int *low, int *target, int *high_base
   /*
    * Local RX audio is delivered to CoreAudio at 48 kHz.  Above the
    * normal low-latency operating point, use 2/3 of the requested
-   * reserve as low-water and 5/3 as base high-water.
-   * Example: 150 ms -> LOW 100 ms, TARGET 150 ms, HIGH 250 ms.
+   * reserve as low-water.  HIGH handling is deliberately separate:
+   * the ring itself is now the reserve for temporary scheduling bursts.
    */
   int reserve_target = reserve_ms * 48;
   if (reserve_target <= RX_LAT_TARGET) {
@@ -145,9 +147,16 @@ static inline void rx_audio_latency_limits(int *low, int *target, int *high_base
   }
   *target = reserve_target;
   *low = (reserve_target * 2) / 3;
-  *high_base = (reserve_target * 5) / 3;
-  if (*high_base >= MY_RING_BUFFER_SIZE) {
-    *high_base = MY_RING_BUFFER_SIZE - RX_LAT_GUARD - 1;
+}
+
+static inline void rx_audio_catchup_limits(int target, int *stop, int *start) {
+  *stop = target + RX_LAT_CATCHUP_STOP_MARGIN;
+  *start = target + RX_LAT_CATCHUP_START_MARGIN;
+  if (*start >= MY_RING_BUFFER_SIZE - 2) {
+    *start = MY_RING_BUFFER_SIZE - 3;
+  }
+  if (*stop >= *start) {
+    *stop = *start - 1;
   }
 }
 
@@ -180,7 +189,9 @@ int audio_get_rx_buffer_diag(RECEIVER *rx, AUDIO_BUFFER_DIAG *diag) {
   }
   memset(diag, 0, sizeof(*diag));
   diag->capacity = MY_RING_BUFFER_SIZE;
-  rx_audio_latency_limits(&diag->low, &diag->target, &diag->high);
+  rx_audio_latency_limits(&diag->low, &diag->target);
+  int catchup_stop;
+  rx_audio_catchup_limits(diag->target, &catchup_stop, &diag->high);
   if (rx->local_audio_buffer == NULL || rx->coreaudio_output_handle == NULL) {
     return 1;
   }
@@ -556,6 +567,8 @@ int audio_test_start(RECEIVER *rx) {
   if (rx->id >= 0 && rx->id < (int)(sizeof(output_ring_primed) / sizeof(output_ring_primed[0]))) {
     g_atomic_int_set(&output_ring_primed[rx->id], 0);
     g_atomic_int_set(&output_ring_starved[rx->id], 0);
+    rx_ring_consumer_phase[rx->id] = 0.0;
+    rx_ring_consumer_catchup[rx->id] = FALSE;
   }
   g_mutex_unlock(&rx->local_audio_mutex);
   return 0;
@@ -620,6 +633,36 @@ void audio_render_local_output(RECEIVER *rx, float *out, unsigned int frames, in
   if (rx_buffer != NULL && st_buffer != NULL) {
     int rx_out = atomic_load_explicit(&rx->local_audio_buffer_outpt, memory_order_relaxed);
     int st_out = atomic_load_explicit(&rx->sidetone_buffer_outpt, memory_order_relaxed);
+    double rx_phase = 0.0;
+    gboolean rx_catchup = FALSE;
+    if (valid_rx_id) {
+      rx_phase = rx_ring_consumer_phase[rx->id];
+      rx_catchup = rx_ring_consumer_catchup[rx->id];
+      if (!g_atomic_int_get(&coreaudio_rx_latency_correction_enabled) ||
+          rx->local_audio_cw_active) {
+        rx_phase = 0.0;
+        rx_catchup = FALSE;
+      } else {
+        int rx_in = atomic_load_explicit(&rx->local_audio_buffer_inpt, memory_order_acquire);
+        int queued = rx_in - rx_out;
+        if (queued < 0) {
+          queued += MY_RING_BUFFER_SIZE;
+        }
+        int rx_lat_low;
+        int rx_lat_target;
+        int catchup_stop;
+        int catchup_start;
+        rx_audio_latency_limits(&rx_lat_low, &rx_lat_target);
+        rx_audio_catchup_limits(rx_lat_target, &catchup_stop, &catchup_start);
+        (void)rx_lat_low;
+        if (!rx_catchup && queued >= catchup_start) {
+          rx_catchup = TRUE;
+        } else if (rx_catchup && queued <= catchup_stop) {
+          rx_phase = 0.0;
+          rx_catchup = FALSE;
+        }
+      }
+    }
     for (unsigned int i = 0; i < frames; i++) {
       float left = 0.0f;
       float right = 0.0f;
@@ -630,15 +673,43 @@ void audio_render_local_output(RECEIVER *rx, float *out, unsigned int frames, in
         ring_had_audio = TRUE;
         left = rx_buffer[2 * rx_out];
         right = rx_buffer[2 * rx_out + 1];
-        rx_out++;
-        if (rx_out >= MY_RING_BUFFER_SIZE) {
-          rx_out = 0;
+        int queued = rx_in - rx_out;
+        if (queued < 0) {
+          queued += MY_RING_BUFFER_SIZE;
+        }
+        if (rx_catchup && queued > 1) {
+          int rx_next = rx_out + 1;
+          if (rx_next >= MY_RING_BUFFER_SIZE) {
+            rx_next = 0;
+          }
+          left += (rx_buffer[2 * rx_next] - left) * (float)rx_phase;
+          right += (rx_buffer[2 * rx_next + 1] - right) * (float)rx_phase;
+        }
+        double step = rx_catchup ? RX_LAT_CATCHUP_RATE : 1.0;
+        rx_phase += step;
+        int advance = (int)rx_phase;
+        rx_phase -= (double)advance;
+        if (advance > queued) {
+          advance = queued;
+          rx_phase = 0.0;
+        }
+        rx_out += advance;
+        while (rx_out >= MY_RING_BUFFER_SIZE) {
+          rx_out -= MY_RING_BUFFER_SIZE;
+        }
+        if (valid_rx_id && advance > 1) {
+          atomic_fetch_add_explicit(&rx_ring_diag_high_corrections[rx->id],
+                                    (unsigned int)(advance - 1), memory_order_relaxed);
         }
         atomic_store_explicit(&rx->local_audio_buffer_outpt, rx_out, memory_order_release);
-      } else if (st_in == st_out) {
-        ring_underrun = TRUE;
-        if (rx->local_audio_cw_active) {
-          atomic_fetch_add_explicit(&cw_ring_diag_underruns, 1U, memory_order_relaxed);
+      } else {
+        rx_phase = 0.0;
+        rx_catchup = FALSE;
+        if (st_in == st_out) {
+          ring_underrun = TRUE;
+          if (rx->local_audio_cw_active) {
+            atomic_fetch_add_explicit(&cw_ring_diag_underruns, 1U, memory_order_relaxed);
+          }
         }
       }
       if (st_in != st_out) {
@@ -675,6 +746,10 @@ void audio_render_local_output(RECEIVER *rx, float *out, unsigned int frames, in
         }
         *out++ = mono;
       }
+    }
+    if (valid_rx_id) {
+      rx_ring_consumer_phase[rx->id] = rx_phase;
+      rx_ring_consumer_catchup[rx->id] = rx_catchup;
     }
   } else {
     memset(out, 0, (size_t) frames * (size_t) channels * sizeof(float));
@@ -817,6 +892,8 @@ int audio_open_output(RECEIVER *rx) {
     atomic_store_explicit(&rx_ring_diag_underruns[rx->id], 0U, memory_order_relaxed);
     atomic_store_explicit(&rx_ring_diag_low_corrections[rx->id], 0U, memory_order_relaxed);
     atomic_store_explicit(&rx_ring_diag_high_corrections[rx->id], 0U, memory_order_relaxed);
+    rx_ring_consumer_phase[rx->id] = 0.0;
+    rx_ring_consumer_catchup[rx->id] = FALSE;
   }
   if (rx->local_audio_buffer == NULL || rx->sidetone_buffer == NULL) {
     g_free(rx->local_audio_buffer);
@@ -942,10 +1019,8 @@ void audio_reprime_output(RECEIVER *rx) {
   }
   int rx_lat_low;
   int rx_lat_target;
-  int rx_lat_high_base;
-  rx_audio_latency_limits(&rx_lat_low, &rx_lat_target, &rx_lat_high_base);
+  rx_audio_latency_limits(&rx_lat_low, &rx_lat_target);
   (void)rx_lat_low;
-  (void)rx_lat_high_base;
   if (avail < rx_lat_target) {
     int oldpt = inpt;
     int missing = rx_lat_target - avail;
@@ -1003,8 +1078,7 @@ int audio_write(RECEIVER *rx, float left, float right) {
     if (avail < 0) { avail += MY_RING_BUFFER_SIZE; }
     int rx_lat_low;
     int rx_lat_target;
-    int rx_lat_high_base;
-    rx_audio_latency_limits(&rx_lat_low, &rx_lat_target, &rx_lat_high_base);
+    rx_audio_latency_limits(&rx_lat_low, &rx_lat_target);
     if (g_atomic_int_get(&coreaudio_rx_latency_correction_enabled) &&
         avail < rx_lat_low) {
       if (rx->id >= 0 && rx->id < 8) {
@@ -1023,26 +1097,13 @@ int audio_write(RECEIVER *rx, float left, float right) {
       inpt = oldpt;
       avail = rx_lat_target;
     }
-    int rx_lat_high = rx_lat_target + (2 * rx->output_samples) + RX_LAT_GUARD;
-    if (rx_lat_high < rx_lat_high_base) {
-      rx_lat_high = rx_lat_high_base;
-    }
-    if (g_atomic_int_get(&coreaudio_rx_latency_correction_enabled) &&
-        avail > rx_lat_high) {
-      if (rx->id >= 0 && rx->id < 8) {
-        diag_high_corrections[rx->id]++;
-        atomic_fetch_add_explicit(&rx_ring_diag_high_corrections[rx->id],
-                                  1U, memory_order_relaxed);
-      }
-      int oldpt = inpt - avail + rx_lat_target;
-      while (oldpt < 0) { oldpt += MY_RING_BUFFER_SIZE; }
-      while (oldpt >= MY_RING_BUFFER_SIZE) { oldpt -= MY_RING_BUFFER_SIZE; }
-      atomic_store_explicit(&rx->local_audio_buffer_inpt, oldpt, memory_order_release);
-      inpt = oldpt;
-      avail = rx_lat_target;
-      l_print("%s: RX ring high-water correction, reduced to %d samples\n",
-              __func__, rx_lat_target);
-    }
+    /*
+     * High-latency recovery is performed by the CoreAudio consumer using a
+     * small fractional read-rate increase.  The producer therefore never
+     * drops samples merely because a latency watermark is exceeded.  A sample
+     * is lost here only in the unavoidable emergency case that the ring is
+     * actually full.
+     */
     if (rx->local_audio_mute) {
       left = 0.0f;
       right = 0.0f;
@@ -1056,6 +1117,10 @@ int audio_write(RECEIVER *rx, float left, float right) {
       buffer[2 * oldpt + 1] = right;
       atomic_store_explicit(&rx->local_audio_buffer_inpt, newpt, memory_order_release);
       inpt = newpt;
+    } else if (rx->id >= 0 && rx->id < 8) {
+      diag_high_corrections[rx->id]++;
+      atomic_fetch_add_explicit(&rx_ring_diag_high_corrections[rx->id],
+                                1U, memory_order_relaxed);
     }
     if (rx->id >= 0 && rx->id < 8) {
       int queued = inpt - outpt;
