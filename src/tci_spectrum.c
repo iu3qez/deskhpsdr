@@ -264,3 +264,97 @@ size_t tci_spectrum_serialize(unsigned char *buf, size_t buf_size,
   memcpy(buf + TCI_SPECTRUM_HEADER_BYTES + TCI_SPECTRUM_PREFIX_BYTES, bins, nbins);
   return total;
 }
+
+//
+// Adaptive fps ladder (R4, KTD5). Request level rungs, highest first.
+//
+static const int tci_spectrum_ladder_rungs[TCI_SPECTRUM_LADDER_LEVELS] = { 20, 10, 5 };
+
+void tci_spectrum_ladder_init(TCI_SPECTRUM_LADDER *l, int64_t now_us) {
+  if (l == NULL) { return; }
+
+  l->level = 0;
+  l->replaced_at_window_start = 0;
+  l->last_replaced = 0;
+  l->window_start_us = now_us;
+  l->last_replaced_us = now_us;
+}
+
+int tci_spectrum_ladder_update(TCI_SPECTRUM_LADDER *l, uint32_t replaced_total,
+                               int64_t now_us) {
+  uint32_t previous;
+
+  if (l == NULL) { return 0; }
+
+  //
+  // spectrum_start zeroes the client counter without going through init():
+  // resynchronise instead of reading the step backwards as a burst.
+  //
+  if (replaced_total < l->last_replaced) {
+    l->last_replaced = replaced_total;
+    l->replaced_at_window_start = replaced_total;
+    l->window_start_us = now_us;
+    l->last_replaced_us = now_us;
+    return l->level;
+  }
+
+  previous = l->last_replaced;
+
+  if (replaced_total != previous) {
+    l->last_replaced = replaced_total;
+    l->last_replaced_us = now_us;      // the quiet timer restarts from here
+  }
+
+  //
+  // Roll an expired window BEFORE counting, so replacements spread over more
+  // than one second never add up: what came in on this very tick belongs to
+  // the new window, hence the base is the count seen at the previous tick.
+  //
+  if (now_us - l->window_start_us >= (int64_t) TCI_SPECTRUM_LADDER_WINDOW_US) {
+    l->window_start_us = now_us;
+    l->replaced_at_window_start = previous;
+  }
+
+  if (replaced_total - l->replaced_at_window_start >= (uint32_t) TCI_SPECTRUM_LADDER_TRIGGER) {
+    // the socket is saturating: one rung down, and a fresh window
+    if (l->level < TCI_SPECTRUM_LADDER_LEVELS - 1) { l->level++; }
+
+    l->window_start_us = now_us;
+    l->replaced_at_window_start = replaced_total;
+  } else if (l->level > 0 &&
+             now_us - l->last_replaced_us >= (int64_t) TCI_SPECTRUM_LADDER_CLIMB_US) {
+    // ten seconds without a single replacement: one rung back up
+    l->level--;
+    l->last_replaced_us = now_us;      // the next climb needs another ten seconds
+  }
+
+  return l->level;
+}
+
+int tci_spectrum_ladder_fps(int level, int requested) {
+  int base;
+  int idx;
+
+  if (requested < 1) { requested = 1; }
+
+  if (level < 0) { level = 0; }
+
+  if (level > TCI_SPECTRUM_LADDER_LEVELS - 1) { level = TCI_SPECTRUM_LADDER_LEVELS - 1; }
+
+  // a request below the last rung has no ladder: it is already as low as it goes
+  if (requested < tci_spectrum_ladder_rungs[TCI_SPECTRUM_LADDER_LEVELS - 1]) { return requested; }
+
+  // start from the highest rung not above the request
+  base = 0;
+
+  while (base < TCI_SPECTRUM_LADDER_LEVELS - 1 &&
+         tci_spectrum_ladder_rungs[base] > requested) {
+    base++;
+  }
+
+  idx = base + level;
+
+  if (idx > TCI_SPECTRUM_LADDER_LEVELS - 1) { idx = TCI_SPECTRUM_LADDER_LEVELS - 1; }
+
+  return tci_spectrum_ladder_rungs[idx];
+}

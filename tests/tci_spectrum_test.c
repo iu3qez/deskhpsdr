@@ -350,6 +350,146 @@ static void test_serialize_bytes(void) {
   CHECK(tci_spectrum_serialize(buf, sizeof(buf), 1, 192000, &pfx, bins, 0) == 0);
 }
 
+/* U4: adaptive fps ladder. Times are handed in by the caller, so the whole
+   ladder is exercised without a clock. */
+#define MS(x) ((int64_t)(x) * 1000)
+
+static void test_ladder_fps_table(void) {
+  /* request on the top rung: the three rungs are 20, 10, 5 */
+  CHECK(tci_spectrum_ladder_fps(0, 20) == 20);
+  CHECK(tci_spectrum_ladder_fps(1, 20) == 10);
+  CHECK(tci_spectrum_ladder_fps(2, 20) == 5);
+  /* a request above the top rung starts from the highest rung below it */
+  CHECK(tci_spectrum_ladder_fps(0, 25) == 20);
+  CHECK(tci_spectrum_ladder_fps(1, 25) == 10);
+  CHECK(tci_spectrum_ladder_fps(2, 25) == 5);
+  /* request 10: the 20 rung does not exist for this client */
+  CHECK(tci_spectrum_ladder_fps(0, 10) == 10);
+  CHECK(tci_spectrum_ladder_fps(1, 10) == 5);
+  CHECK(tci_spectrum_ladder_fps(2, 10) == 5);
+  /* request 7: highest rung below it is 5, and there is nothing under it */
+  CHECK(tci_spectrum_ladder_fps(0, 7) == 5);
+  CHECK(tci_spectrum_ladder_fps(1, 7) == 5);
+  CHECK(tci_spectrum_ladder_fps(2, 7) == 5);
+  CHECK(tci_spectrum_ladder_fps(0, 5) == 5);
+  CHECK(tci_spectrum_ladder_fps(2, 5) == 5);
+  /* below the last rung the request is served as is at every level */
+  CHECK(tci_spectrum_ladder_fps(0, 3) == 3);
+  CHECK(tci_spectrum_ladder_fps(1, 3) == 3);
+  CHECK(tci_spectrum_ladder_fps(2, 3) == 3);
+  CHECK(tci_spectrum_ladder_fps(0, 1) == 1);
+  CHECK(tci_spectrum_ladder_fps(2, 1) == 1);
+  /* out of range arguments are clamped, never indexed */
+  CHECK(tci_spectrum_ladder_fps(-1, 20) == 20);
+  CHECK(tci_spectrum_ladder_fps(7, 20) == 5);
+  CHECK(tci_spectrum_ladder_fps(0, 0) == 1);
+}
+
+static void test_ladder_idle(void) {
+  TCI_SPECTRUM_LADDER l;
+  int64_t t;
+  tci_spectrum_ladder_init(&l, 0);
+
+  /* 30 s of ticks without a single replacement: the top rung is kept */
+  for (t = MS(100); t <= MS(30000); t += MS(100)) {
+    CHECK(tci_spectrum_ladder_update(&l, 0, t) == 0);
+  }
+
+  CHECK(tci_spectrum_ladder_fps(0, 20) == 20);
+}
+
+static void test_ladder_step_down(void) {
+  TCI_SPECTRUM_LADDER l;
+  tci_spectrum_ladder_init(&l, 0);
+  CHECK(tci_spectrum_ladder_update(&l, 0, MS(50)) == 0);
+  /* three replacements inside one second: one rung down */
+  CHECK(tci_spectrum_ladder_update(&l, 1, MS(100)) == 0);
+  CHECK(tci_spectrum_ladder_update(&l, 2, MS(200)) == 0);
+  CHECK(tci_spectrum_ladder_update(&l, 3, MS(300)) == 1);
+  CHECK(tci_spectrum_ladder_fps(1, 20) == 10);
+  /* three more inside the next second: down to the last rung */
+  CHECK(tci_spectrum_ladder_update(&l, 4, MS(400)) == 1);
+  CHECK(tci_spectrum_ladder_update(&l, 5, MS(500)) == 1);
+  CHECK(tci_spectrum_ladder_update(&l, 6, MS(600)) == 2);
+  CHECK(tci_spectrum_ladder_fps(2, 20) == 5);
+  /* further replacements cannot push it below the last rung */
+  CHECK(tci_spectrum_ladder_update(&l, 7, MS(700)) == 2);
+  CHECK(tci_spectrum_ladder_update(&l, 8, MS(800)) == 2);
+  CHECK(tci_spectrum_ladder_update(&l, 9, MS(900)) == 2);
+  CHECK(tci_spectrum_ladder_update(&l, 12, MS(1900)) == 2);
+}
+
+static void test_ladder_climb(void) {
+  TCI_SPECTRUM_LADDER l;
+  tci_spectrum_ladder_init(&l, 0);
+  /* straight down to the last rung, last replacement at t = 600 ms */
+  CHECK(tci_spectrum_ladder_update(&l, 1, MS(100)) == 0);
+  CHECK(tci_spectrum_ladder_update(&l, 2, MS(200)) == 0);
+  CHECK(tci_spectrum_ladder_update(&l, 3, MS(300)) == 1);
+  CHECK(tci_spectrum_ladder_update(&l, 4, MS(400)) == 1);
+  CHECK(tci_spectrum_ladder_update(&l, 5, MS(500)) == 1);
+  CHECK(tci_spectrum_ladder_update(&l, 6, MS(600)) == 2);
+  /* just under ten quiet seconds is not enough */
+  CHECK(tci_spectrum_ladder_update(&l, 6, MS(10500)) == 2);
+  /* ten quiet seconds: one rung up */
+  CHECK(tci_spectrum_ladder_update(&l, 6, MS(10600)) == 1);
+  CHECK(tci_spectrum_ladder_fps(1, 20) == 10);
+  /* the timer restarts, so the next climb needs another ten seconds */
+  CHECK(tci_spectrum_ladder_update(&l, 6, MS(20500)) == 1);
+  CHECK(tci_spectrum_ladder_update(&l, 6, MS(20600)) == 0);
+  CHECK(tci_spectrum_ladder_fps(0, 20) == 20);
+  /* and never above the top */
+  CHECK(tci_spectrum_ladder_update(&l, 6, MS(40000)) == 0);
+  CHECK(tci_spectrum_ladder_update(&l, 6, MS(60000)) == 0);
+}
+
+static void test_ladder_never_above_request(void) {
+  TCI_SPECTRUM_LADDER l;
+  tci_spectrum_ladder_init(&l, 0);
+  CHECK(tci_spectrum_ladder_update(&l, 1, MS(100)) == 0);
+  CHECK(tci_spectrum_ladder_update(&l, 2, MS(200)) == 0);
+  CHECK(tci_spectrum_ladder_update(&l, 3, MS(300)) == 1);
+  /* a client which asked for 10 fps drops to 5, not to 10 again */
+  CHECK(tci_spectrum_ladder_fps(1, 10) == 5);
+  CHECK(tci_spectrum_ladder_update(&l, 4, MS(400)) == 1);
+  CHECK(tci_spectrum_ladder_update(&l, 5, MS(500)) == 1);
+  CHECK(tci_spectrum_ladder_update(&l, 6, MS(600)) == 2);
+  CHECK(tci_spectrum_ladder_fps(2, 10) == 5);
+  /* climbing back never goes above what the client asked for */
+  CHECK(tci_spectrum_ladder_update(&l, 6, MS(10600)) == 1);
+  CHECK(tci_spectrum_ladder_update(&l, 6, MS(20600)) == 0);
+  CHECK(tci_spectrum_ladder_fps(0, 10) == 10);
+}
+
+static void test_ladder_window_roll(void) {
+  TCI_SPECTRUM_LADDER l;
+  tci_spectrum_ladder_init(&l, 0);
+  /* two replacements in one second and two in the next: never three inside
+     the same window, so the rung does not move */
+  CHECK(tci_spectrum_ladder_update(&l, 1, MS(200)) == 0);
+  CHECK(tci_spectrum_ladder_update(&l, 2, MS(500)) == 0);
+  CHECK(tci_spectrum_ladder_update(&l, 3, MS(1200)) == 0);
+  CHECK(tci_spectrum_ladder_update(&l, 4, MS(1600)) == 0);
+  /* the window that started at 1200 ms now holds three: that one does count */
+  CHECK(tci_spectrum_ladder_update(&l, 5, MS(1800)) == 1);
+}
+
+static void test_ladder_counter_reset(void) {
+  TCI_SPECTRUM_LADDER l;
+  tci_spectrum_ladder_init(&l, 0);
+  CHECK(tci_spectrum_ladder_update(&l, 1, MS(100)) == 0);
+  CHECK(tci_spectrum_ladder_update(&l, 2, MS(200)) == 0);
+  /* spectrum_start zeroes the replacement counter: resynchronise instead of
+     reading the difference as a burst of replacements */
+  CHECK(tci_spectrum_ladder_update(&l, 0, MS(300)) == 0);
+  CHECK(tci_spectrum_ladder_update(&l, 1, MS(400)) == 0);
+  CHECK(tci_spectrum_ladder_update(&l, 2, MS(500)) == 0);
+  CHECK(tci_spectrum_ladder_update(&l, 3, MS(600)) == 1);
+  /* a NULL state is a no-op, not a crash */
+  CHECK(tci_spectrum_ladder_update(NULL, 3, MS(700)) == 0);
+  tci_spectrum_ladder_init(NULL, 0);
+}
+
 int main(void) {
   test_span_inside();
   test_span_full();
@@ -362,6 +502,13 @@ int main(void) {
   test_floor_db();
   test_quantize();
   test_serialize_bytes();
+  test_ladder_fps_table();
+  test_ladder_idle();
+  test_ladder_step_down();
+  test_ladder_climb();
+  test_ladder_never_above_request();
+  test_ladder_window_roll();
+  test_ladder_counter_reset();
   printf("tci_spectrum_test: %d checks, %d failed\n", tests_run, tests_failed);
   return tests_failed == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

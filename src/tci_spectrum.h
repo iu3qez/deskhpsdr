@@ -150,4 +150,62 @@ size_t tci_spectrum_serialize(unsigned char *buf, size_t buf_size,
                               const TCI_SPECTRUM_PREFIX *prefix,
                               const uint8_t *bins, size_t nbins);
 
+//
+// Adaptive fps ladder (R4, KTD5).
+//
+// The rungs are 20, 10 and 5 fps at REQUEST level: the value returned here is
+// what the client asked for, adjusted by the current level, and it still has
+// to go through the display-rate step function before being served.
+//
+// Level 0 is the top rung. The trigger is socket saturation and nothing else:
+// the caller hands in the running count of spectrum frames the coalescing slot
+// had to replace (KTD4), never an RTT or a loss figure.
+//
+//  - three replacements inside a window of one second: one rung down, and a
+//    fresh window starts;
+//  - a window that elapses with fewer than three simply rolls forward;
+//  - ten seconds without a single replacement: one rung up, and the ten second
+//    timer restarts.
+//
+// Time is passed in by the caller as monotonic microseconds, so the module
+// keeps its promise of not depending on GLib.
+//
+
+#define TCI_SPECTRUM_LADDER_LEVELS 3              // rungs 20, 10, 5
+#define TCI_SPECTRUM_LADDER_WINDOW_US 1000000     // replacement window
+#define TCI_SPECTRUM_LADDER_TRIGGER 3             // replacements that cost a rung
+#define TCI_SPECTRUM_LADDER_CLIMB_US 10000000     // quiet time that wins one back
+
+typedef struct _tci_spectrum_ladder {
+  int level;                          // 0 = top rung, TCI_SPECTRUM_LADDER_LEVELS - 1 = last
+  uint32_t replaced_at_window_start;  // replacement count when the window opened
+  uint32_t last_replaced;             // replacement count seen at the last update
+  int64_t window_start_us;            // start of the current one second window
+  int64_t last_replaced_us;           // time of the last observed replacement
+} TCI_SPECTRUM_LADDER;
+
+//
+// Start at the top rung, with both timers running from now_us.
+// A NULL state is a no-op.
+//
+void tci_spectrum_ladder_init(TCI_SPECTRUM_LADDER *l, int64_t now_us);
+
+//
+// One producer tick. "replaced_total" is the running per client and receiver
+// replacement counter; only its increments matter, and a counter that went
+// backwards (spectrum_start zeroes it) resynchronises the state instead of
+// counting as a burst. Returns the level in force after this tick, 0 for a
+// NULL state.
+//
+int tci_spectrum_ladder_update(TCI_SPECTRUM_LADDER *l, uint32_t replaced_total,
+                               int64_t now_us);
+
+//
+// Request level fps of a rung: the rungs are 20, 10 and 5, the starting rung
+// is the highest one not above "requested", and "level" moves down from there,
+// clamped to the last rung. A request below the last rung has no ladder at all
+// and is returned unchanged at every level. "level" out of range is clamped.
+//
+int tci_spectrum_ladder_fps(int level, int requested);
+
 #endif

@@ -199,6 +199,7 @@ typedef struct _client {
   unsigned char *spectrum_slot[TCI_RX_AUDIO_MAX_RECEIVERS];   // coalescing slot (KTD4)
   size_t spectrum_slot_len[TCI_RX_AUDIO_MAX_RECEIVERS];       // 0 = slot empty
   guint32 spectrum_slot_replaced[TCI_RX_AUDIO_MAX_RECEIVERS]; // U4 reads this
+  TCI_SPECTRUM_LADDER spectrum_ladder[TCI_RX_AUDIO_MAX_RECEIVERS]; // adaptive fps (U4)
   int idle_queued;              // counter
   struct lws *wsi;              // libwebsockets connection
   GQueue *lws_tx_queue;         // queued RESPONSE objects for LWS writable callback
@@ -819,8 +820,8 @@ static int tci_spectrum_display_rate(int rx_id) {
 // A display rate of zero means "rate not known yet"; the request is kept as
 // is and the producer falls back to one frame per cycle.
 //
-// The adaptive 20->10->5 ladder of R4 is U4's business and is not here: this
-// function only implements the static ceiling.
+// The adaptive 20->10->5 ladder of R4 lives in tci_spectrum_ladder_fps(), whose
+// result comes in here as "requested": this function only applies the ceiling.
 //
 static int tci_spectrum_fps_step(int requested, int display_fps) {
   int want;
@@ -903,6 +904,7 @@ static void tci_spectrum_snapshot_ready(int rx_id) {
   int64_t avail_high;
   int display_fps;
   int woke_lws = 0;
+  gint64 now_us;
 
   if (rx_id < 0 || rx_id >= TCI_RX_AUDIO_MAX_RECEIVERS) { return; }
 
@@ -916,12 +918,15 @@ static void tci_spectrum_snapshot_ready(int rx_id) {
   if (avail_high <= avail_low) { return; }
 
   display_fps = tci_spectrum_display_rate(rx_id);
+  // one timestamp for the whole tick: the ladder windows are seconds wide
+  now_us = g_get_monotonic_time();
   clients = tci_clients_snapshot();
 
   for (GList *l = clients; l != NULL; l = l->next) {
     CLIENT *client = (CLIENT *) l->data;
     TCI_SPECTRUM_SPAN span;
     TCI_SPECTRUM_PREFIX prefix;
+    char msg[MAXMSGSIZE];
     long long req_low;
     long long req_high;
     unsigned int phase;
@@ -929,6 +934,10 @@ static void tci_spectrum_snapshot_ready(int rx_id) {
     size_t frame_len;
     int bins_req;
     int divisor;
+    int level;
+    int prev_level;
+    int fps_eff = 0;
+    int fps_changed = 0;
 
     if (client == NULL || !client->running) { continue; }
 
@@ -939,6 +948,28 @@ static void tci_spectrum_snapshot_ready(int rx_id) {
       continue;
     }
 
+    //
+    // Adaptive ladder (R4, KTD5), once per delivery tick and before the phase
+    // test: a client already down to 5 fps has to keep being sampled at the
+    // display rate, otherwise it could never climb back. The only input is the
+    // count of frames the coalescing slot had to replace, that is socket
+    // saturation, never RTT or loss.
+    //
+    prev_level = client->spectrum_ladder[rx_id].level;
+    level = tci_spectrum_ladder_update(&client->spectrum_ladder[rx_id],
+                                       client->spectrum_slot_replaced[rx_id], now_us);
+
+    if (level != prev_level) {
+      fps_eff = tci_spectrum_fps_step(
+                  tci_spectrum_ladder_fps(level, client->spectrum_fps_req[rx_id]), display_fps);
+
+      if (fps_eff != client->spectrum_fps_eff[rx_id]) {
+        client->spectrum_fps_eff[rx_id] = fps_eff;
+        client->spectrum_phase[rx_id] = 0;   // the new cadence starts here
+        fps_changed = 1;
+      }
+    }
+
     // clamped again here so "values" and "bins" cannot be overrun whatever
     // path wrote spectrum_bins_req
     bins_req = (int) tci_spectrum_clamp_bins(client->spectrum_bins_req[rx_id]);
@@ -947,6 +978,13 @@ static void tci_spectrum_snapshot_ready(int rx_id) {
     divisor = tci_spectrum_divisor(client->spectrum_fps_eff[rx_id], display_fps);
     phase = client->spectrum_phase[rx_id]++;
     g_mutex_unlock(&tci_mutex);
+
+    // this client only, and outside the lock (R4)
+    if (fps_changed) {
+      snprintf(msg, sizeof(msg), "%s:%d,%d;",
+               tci_cmd_name("spectrum_fps", "SPECTRUM_FPS"), rx_id, fps_eff);
+      tci_send_text(client, msg);
+    }
 
     // not this client's turn in the display cycle
     if (divisor > 1 && (phase % (unsigned int) divisor) != 0) { continue; }
@@ -1048,9 +1086,9 @@ static void tci_spectrum_state_changed(int rx_id, int state) {
 // The local display rate of this receiver moved, so fps_eff has to follow it
 // (R10) and every client whose effective rate really changed has to be told.
 //
-// This is the static half only. The adaptive ladder of R4 (drop a step on
-// three slot replacements in one second, climb back after ten quiet seconds)
-// belongs to U4 and will drive the same fields from the producer.
+// This is the display-rate half. The adaptive ladder of R4 lives in the
+// producer and moves the same fields; both feed the request through
+// tci_spectrum_ladder_fps() first, so the two paths agree.
 //
 static void tci_spectrum_fps_changed(int rx_id) {
   GList *clients;
@@ -1074,7 +1112,11 @@ static void tci_spectrum_fps_changed(int rx_id) {
     g_mutex_lock(&tci_mutex);
 
     if (client->spectrum_enabled[rx_id]) {
-      fps_eff = tci_spectrum_fps_step(client->spectrum_fps_req[rx_id], display_fps);
+      // the ladder level is part of the request seen by the step function,
+      // so this path and the producer cannot disagree on fps_eff (U4)
+      fps_eff = tci_spectrum_fps_step(
+                  tci_spectrum_ladder_fps(client->spectrum_ladder[rx_id].level,
+                                          client->spectrum_fps_req[rx_id]), display_fps);
 
       if (fps_eff != client->spectrum_fps_eff[rx_id]) {
         client->spectrum_fps_eff[rx_id] = fps_eff;
@@ -6137,7 +6179,9 @@ static void tci_cmd_spectrum_start(CLIENT *client, const TCI_CMD *cmd) {
 
   display_fps = tci_spectrum_display_rate(rx_id);
   displaying = receiver[rx_id]->displaying ? 1 : 0;
-  fps_eff = tci_spectrum_fps_step(fps_req, display_fps);
+  // level 0 of the ladder, so the negotiated rate agrees with what the
+  // producer and the display-rate path compute later (KTD5)
+  fps_eff = tci_spectrum_fps_step(tci_spectrum_ladder_fps(0, fps_req), display_fps);
   g_mutex_lock(&tci_mutex);
   was_enabled = client->spectrum_enabled[rx_id];
   client->spectrum_enabled[rx_id] = 1;
@@ -6149,6 +6193,8 @@ static void tci_cmd_spectrum_start(CLIENT *client, const TCI_CMD *cmd) {
   client->spectrum_seq[rx_id] = 0;             // seq restarts on every start
   client->spectrum_slot_len[rx_id] = 0;        // drop a frame from the old run
   client->spectrum_slot_replaced[rx_id] = 0;
+  // the ladder starts again from the top rung, with both timers from now
+  tci_spectrum_ladder_init(&client->spectrum_ladder[rx_id], g_get_monotonic_time());
   client->spectrum_have_span[rx_id] = 0;       // no effective span yet
   // a span requested before the subscription, or across a restart, is kept
   g_mutex_unlock(&tci_mutex);
@@ -6650,6 +6696,7 @@ static void tci_init_client(CLIENT *client, int fd, int seq) {
     client->spectrum_slot[i] = NULL;
     client->spectrum_slot_len[i] = 0;
     client->spectrum_slot_replaced[i] = 0;
+    tci_spectrum_ladder_init(&client->spectrum_ladder[i], g_get_monotonic_time());
   }
 }
 
