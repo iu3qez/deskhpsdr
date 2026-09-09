@@ -311,14 +311,30 @@ network servers listen on:
 - `tci_bind_addr` — the TCI WebSocket server (default port 40001);
 - `rigctl_bind_addr` — the rigctl TCP (TS-2000 emulation) server.
 
+Both are edited in the `CAT/TCI` menu, on the `Bind` line below the
+server they belong to, and are stored in the radio's props file. Like
+the port controls next to them, each field is editable only while its
+server is switched off. A value the C library cannot parse as an IPv4
+address is marked with a warning icon as you type.
+
 Both default to the empty string, meaning "all interfaces", identical
 to deskHPSDR's behavior without this extension. Set either to a local
 IP address (e.g. a WireGuard interface's address) to restrict that
-listener to it. Because TCI has no authentication (section 1), the bind
-address is the only access control available for it — a configured but
-unparsable address therefore fails closed (the listener does not start
-and an error is logged), rather than silently falling back to "all
-interfaces".
+listener to it. libwebsockets also accepts an interface *name* here:
+`lws_interface_to_sa()` first matches the string against `ifa_name`
+from `getifaddrs()` and only falls back to parsing it as a numeric
+address, so `wg0` and `10.0.0.1` are both valid for `tci_bind_addr`.
+The rigctl server takes IPv4 addresses only.
+
+Because TCI has no authentication (section 1), the bind address is the
+only access control available for it — a configured but unparsable
+address therefore fails closed (the listener does not start and an
+error is logged), rather than silently falling back to "all
+interfaces". For TCI this requires
+`LWS_SERVER_OPTION_FAIL_UPON_UNABLE_TO_BIND`: without it libwebsockets
+parks the vhost on its deferred no-listener list and still reports a
+successfully created context, which would leave the server up with no
+listening socket and no visible error.
 
 ## 7. The Python probe
 

@@ -27,6 +27,7 @@
 #include <termios.h>
 #include <unistd.h>
 #include <math.h>
+#include <arpa/inet.h>
 
 #include "new_menu.h"
 #include "rigctl_menu.h"
@@ -47,6 +48,8 @@ static GtkWidget *rigctld_btn;
 static GtkWidget *rigctl_andromeda_btn;
 static GtkWidget *rigctl_port_select;
 static GtkWidget *tci_port_select;
+static GtkWidget *rigctl_bind_entry;
+static GtkWidget *tci_bind_entry;
 
 static void cleanup(void) {
   if (dialog != NULL) {
@@ -86,6 +89,29 @@ static void rigctl_value_changed_cb(GtkWidget *widget, gpointer data) {
   }
 }
 
+//
+// Flag a bind address that inet_pton() will refuse. An empty entry is the
+// default (all interfaces) and is never flagged.
+//
+static void bind_addr_mark(GtkWidget *entry, const char *text) {
+  struct in_addr addr;
+  gboolean bad = (text[0] != '\0' && inet_pton(AF_INET, text, &addr) != 1);
+  gtk_entry_set_icon_from_icon_name(GTK_ENTRY(entry), GTK_ENTRY_ICON_SECONDARY,
+                                    bad ? "dialog-warning" : NULL);
+}
+
+static void rigctl_bind_addr_cb(GtkWidget *widget, gpointer data) {
+  const char *text = gtk_entry_get_text(GTK_ENTRY(widget));
+  g_strlcpy(rigctl_bind_addr, text, sizeof(rigctl_bind_addr));
+  bind_addr_mark(widget, text);
+}
+
+static void tci_bind_addr_cb(GtkWidget *widget, gpointer data) {
+  const char *text = gtk_entry_get_text(GTK_ENTRY(widget));
+  g_strlcpy(tci_bind_addr, text, sizeof(tci_bind_addr));
+  bind_addr_mark(widget, text);
+}
+
 static void rigctl_debug_cb(GtkWidget *widget, gpointer data) {
   rigctl_debug = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(widget));
 }
@@ -98,9 +124,11 @@ static void tci_enable_cb(GtkWidget *widget, gpointer data) {
   tci_enable = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(widget));
   if (tci_enable) {
     gtk_widget_set_sensitive(tci_port_select, FALSE);
+    gtk_widget_set_sensitive(tci_bind_entry, FALSE);
     launch_tci();
   } else {
     gtk_widget_set_sensitive(tci_port_select, TRUE);
+    gtk_widget_set_sensitive(tci_bind_entry, TRUE);
     shutdown_tci();
   }
 }
@@ -122,6 +150,7 @@ static void rigctl_tcp_enable_cb(GtkWidget *widget, gpointer data) {
     gtk_widget_set_sensitive(rigctld_btn, TRUE);
     gtk_widget_set_sensitive(rigctl_andromeda_btn, TRUE);
     gtk_widget_set_sensitive(rigctl_port_select, FALSE);
+    gtk_widget_set_sensitive(rigctl_bind_entry, FALSE);
     if (use_rigctld) {
       rigctl_tcp_andromeda = 0;
       gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(rigctl_andromeda_btn), rigctl_tcp_andromeda);
@@ -134,6 +163,7 @@ static void rigctl_tcp_enable_cb(GtkWidget *widget, gpointer data) {
     gtk_widget_set_sensitive(rigctld_btn, FALSE);
     gtk_widget_set_sensitive(rigctl_andromeda_btn, FALSE);
     gtk_widget_set_sensitive(rigctl_port_select, TRUE);
+    gtk_widget_set_sensitive(rigctl_bind_entry, TRUE);
     shutdown_tcp_rigctl();
   }
 }
@@ -488,6 +518,25 @@ void rigctl_menu(GtkWidget *parent) {
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(w), rigctl_tcp_autoreporting);
   gtk_grid_attach(GTK_GRID(grid), w, 6, row, 1, 1);
   g_signal_connect(w, "toggled", G_CALLBACK(tcp_autoreporting_cb), NULL);
+  //--------------------------------------------------------------------------------
+  row++;
+  w = gtk_label_new("Bind");
+  gtk_widget_set_name(w, "boldlabel");
+  gtk_widget_set_halign(w, GTK_ALIGN_END);
+  gtk_grid_attach(GTK_GRID(grid), w, 0, row, 1, 1);
+  rigctl_bind_entry = gtk_entry_new();
+  gtk_entry_set_width_chars(GTK_ENTRY(rigctl_bind_entry), 15);
+  gtk_entry_set_placeholder_text(GTK_ENTRY(rigctl_bind_entry), "all interfaces");
+  gtk_entry_set_text(GTK_ENTRY(rigctl_bind_entry), rigctl_bind_addr);
+  gtk_widget_set_tooltip_text(rigctl_bind_entry,
+                              "IPv4 address of the interface the network CAT server listens on\n"
+                              "(empty = all interfaces, only accessible if TCP is OFF)\n\n"
+                              "An address that cannot be parsed is refused and the\n"
+                              "TCP server is not started at all.");
+  gtk_grid_attach(GTK_GRID(grid), rigctl_bind_entry, 1, row, 2, 1);
+  g_signal_connect(rigctl_bind_entry, "changed", G_CALLBACK(rigctl_bind_addr_cb), NULL);
+  bind_addr_mark(rigctl_bind_entry, rigctl_bind_addr);
+  gtk_widget_set_sensitive(rigctl_bind_entry, rigctl_tcp_enable ? FALSE : TRUE);
   /* Put the Serial Port stuff here, one port per line */
   for (int i = 0; i < MAX_SERIAL; i++) {
     char str[64];
@@ -712,6 +761,25 @@ void rigctl_menu(GtkWidget *parent) {
   gtk_grid_attach(GTK_GRID(grid), w, 3, row, 1, 1);
   g_signal_connect(w, "toggled", G_CALLBACK(btn_toggle_cb), &tci_cmd_uppercase);
 #endif
+  //-----------------------------------------------------------------------------------------------------------------
+  row++;
+  w = gtk_label_new("Bind");
+  gtk_widget_set_name(w, "boldlabel");
+  gtk_widget_set_halign(w, GTK_ALIGN_END);
+  gtk_grid_attach(GTK_GRID(grid), w, 0, row, 1, 1);
+  tci_bind_entry = gtk_entry_new();
+  gtk_entry_set_width_chars(GTK_ENTRY(tci_bind_entry), 15);
+  gtk_entry_set_placeholder_text(GTK_ENTRY(tci_bind_entry), "all interfaces");
+  gtk_entry_set_text(GTK_ENTRY(tci_bind_entry), tci_bind_addr);
+  gtk_widget_set_tooltip_text(tci_bind_entry,
+                              "IPv4 address of the interface the TCI server listens on\n"
+                              "(empty = all interfaces, only accessible if TCI is OFF)\n\n"
+                              "The address is handed to libwebsockets, which decides\n"
+                              "what to do with one it cannot use.");
+  gtk_grid_attach(GTK_GRID(grid), tci_bind_entry, 1, row, 2, 1);
+  g_signal_connect(tci_bind_entry, "changed", G_CALLBACK(tci_bind_addr_cb), NULL);
+  bind_addr_mark(tci_bind_entry, tci_bind_addr);
+  gtk_widget_set_sensitive(tci_bind_entry, tci_enable ? FALSE : TRUE);
   //-----------------------------------------------------------------------------------------------------------------
   int col = 1;
   row++;

@@ -7237,6 +7237,13 @@ static gpointer tci_lws_server(gpointer data) {
   //
   if (tci_bind_addr[0] != '\0') {
     info.iface = tci_bind_addr;
+    //
+    // Without this option lws puts a vhost whose interface does not resolve on
+    // its deferred no-listener list and reports success, so the context would
+    // come up with no listening socket at all. Fail closed instead, the way the
+    // rigctl TCP server does.
+    //
+    info.options |= LWS_SERVER_OPTION_FAIL_UPON_UNABLE_TO_BIND;
   }
   if (first) {
     info.options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
