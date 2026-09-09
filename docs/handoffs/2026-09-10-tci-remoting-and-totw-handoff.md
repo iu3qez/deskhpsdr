@@ -4,7 +4,7 @@ Data: 2026-09-10. Sostituisce `docs/handoffs/2026-09-09-tci-remoting-handoff.md`
 
 ## Stato dei repository
 
-**`iu3qez/deskhpsdr`**, branch `claude/riprendiamo-da-handoff-a19a6c`, HEAD `128fe04`.
+**`iu3qez/deskhpsdr`**, branch `feat/tci-bind-address-ui`. Il branch e' stato rinominato il 2026-09-10: il nome autogenerato dalla sessione, `claude/riprendiamo-da-handoff-a19a6c`, non esiste piu' ne' in locale ne' su origin. La directory del worktree conserva il vecchio nome, perche' rinominare il branch non la tocca.
 
 La PR #1 con le estensioni TCI e' **mergiata** in `origin/master` (`8e84a99`). Il branch di lavoro `claude/deskhpsdr-tci-remoting` e' storia chiusa. Su questo branch ci sono, sopra al merge della PR:
 
@@ -13,6 +13,7 @@ La PR #1 con le estensioni TCI e' **mergiata** in `origin/master` (`8e84a99`). I
 | `75e5507` | il vecchio handoff |
 | `4e9e6d7` | campi bind address nel menu CAT/TCI, piu' il fail-closed su TCI |
 | `128fe04` | merge di `upstream/master` a `05c84a3`, sette commit di dl1bz |
+| `d70c5f6` | questo handoff |
 
 Il `master` locale e' rimasto indietro a `2bbe760` e diverge da `origin/master`. Non e' un problema in se', ma prima o poi va riconciliato: tutto quello che serve sta su questo branch.
 
@@ -55,7 +56,6 @@ Invariate rispetto al handoff precedente, tranne il punto sul bind che e' stato 
 - `src/tci.c` sfiora le 7300 righe; le quindici array per receiver in `CLIENT` vorrebbero essere una struct.
 - `spectrum_start` durante una pausa del display puo' leggere `displaying` fuori mutex. Corsa stretta, effetto: stato 1 e poi 0.
 - Il Makefile non traccia le dipendenze dagli header: dopo un merge che tocca un `.h` serve `make clean && make`, altrimenti oggetti compilati contro un layout di struct vecchio.
-- Il nome del branch di lavoro e' quello autogenerato dalla sessione. Su un repo pubblico si legge male: vale la pena rinominarlo prima che ci si costruisca sopra.
 
 ## Come riprendere
 
