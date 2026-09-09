@@ -233,9 +233,10 @@ scene and should be measured on the link in question, not assumed.
 ## 3. `rx_att_ex` — attenuation / RF gain
 
 Attenuation and RF gain belong to the ADC, not to the receiver: on a
-single-ADC radio (Hermes-Lite 2, Hermes, ANAN-10/100) both receivers
-share ADC 0 and therefore the same value; only two-ADC radios
-(ANAN-100D/200D/7000/8000, G2) have independent per-receiver values.
+single-ADC radio both receivers share ADC 0 and therefore the same
+value; only two-ADC radios (Orion/Angelia-class boards and later) have
+independent per-receiver values. The reply carries the ADC index so a
+client never has to guess which case it is talking to.
 `<rx>` is a `receiver[]` index; the server resolves the ADC it is
 attached to and reports that index back in the reply so the client
 never has to guess which ADC a change actually affected.
@@ -250,8 +251,8 @@ never has to guess which ADC a change actually affected.
 - `att` — a stepped attenuator, range `0..31`, step `1` (radios where
   `have_rx_att` is true);
 - `gain` — a continuous RF gain, range `[adc[].min_gain, adc[].max_gain]`,
-  step `1` (radios where `have_rx_gain` is true instead — this is the
-  Hermes-Lite 2 case, e.g. `-12..48`);
+  step `1` (radios where `have_rx_gain` is true instead of an
+  attenuator, typically `-12..48`);
 - `none` — neither is available; a set request is ignored and the query
   reply is returned unchanged.
 
