@@ -22,6 +22,7 @@ My goal was to make an more optimzed version running with focus on Desktop-OS li
 | TCI CAT                        | supported ✅                                  | TCI 2.0           |
 | TCI Audio                      | supported (only 48k and 24k) ✅               | TCI 2.0           |
 | TCI I/Q                        | supported (48k/96k/192k/384k) ✅              | TCI 2.0           |
+| TCI remote spectrum stream     | supported, opt-in per client ✅               | see [documentation/deskHPSDR_TCI_Remote_Extensions.md](documentation/deskHPSDR_TCI_Remote_Extensions.md) |
 | PTT external                   | supported (via serial RTS/CTS or MIDI) ✅     |                   |
 | MIDI Control                   | supported ✅                                  |                   |
 | Hamlib                         | supported (with own included rigctld) ✅      |                   |

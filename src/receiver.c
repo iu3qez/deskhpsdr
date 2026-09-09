@@ -678,6 +678,12 @@ static int rx_update_display(gpointer data) {
       g_mutex_lock(&rx->display_mutex);
       rc = rx_get_pixels(rx);
       if (rc) {
+        //
+        // Snapshot for the TCI spectrum stream: one memcpy plus a few scalars
+        // while the mutex is still held. The per-client work happens further
+        // down, outside the lock (KTD3). Returns at once with no subscriber.
+        //
+        tci_rx_spectrum_block(rx);
         if (rx->display_panadapter) {
           rx_panadapter_update(rx);
         }
@@ -686,6 +692,9 @@ static int rx_update_display(gpointer data) {
         }
       }
       g_mutex_unlock(&rx->display_mutex);
+      if (rc) {
+        tci_rx_spectrum_deliver(rx);
+      }
       if (active_receiver == rx) {
         //
         // since rx->meter is used in other places as well (e.g. rigctl),
@@ -738,6 +747,11 @@ void rx_set_displaying(RECEIVER *rx) {
       rx->update_timer_id = 0;
     }
   }
+  //
+  // Report a paused or resumed display to the subscribed TCI clients (R9).
+  // This is also reached with an unchanged state, the hook filters it.
+  //
+  tci_rx_displaying_changed(rx);
 }
 
 static void rx_create_visual(RECEIVER *rx) {

@@ -89,6 +89,7 @@
 #include <json-c/json.h>
 
 unsigned int rigctl_tcp_port = 19090;
+char rigctl_bind_addr[64] = "";  // empty: listen on all interfaces
 volatile int rigctl_tcp_enable = 0;
 int rigctl_tcp_andromeda = 0;
 int rigctl_tcp_autoreporting = 0;
@@ -1573,7 +1574,8 @@ static gboolean andromeda_oneshot_handler(gpointer data) {
 static gpointer rigctl_server(gpointer data) {
   int port = GPOINTER_TO_INT(data);
   int on = 1;
-  t_print("%s: starting TCP server on port %d\n", __func__, port);
+  t_print("%s: starting TCP server on %s port %d\n", __func__,
+          rigctl_bind_addr[0] != '\0' ? rigctl_bind_addr : "all interfaces", port);
   server_socket = socket(AF_INET, SOCK_STREAM, 0);
   if (server_socket < 0) {
     t_perror("rigctl_server: listen socket failed");
@@ -1584,7 +1586,24 @@ static gpointer rigctl_server(gpointer data) {
   // bind to listening port
   memset(&server_address, 0, sizeof(server_address));
   server_address.sin_family = AF_INET;
-  server_address.sin_addr.s_addr = htonl(INADDR_ANY);
+
+  //
+  // An empty rigctl_bind_addr means "all interfaces", which is the default.
+  // A configured but unparsable address is fail-closed: the bind address is
+  // the only access control on a server without authentication, so we never
+  // fall back to INADDR_ANY and simply do not start the listener.
+  //
+  if (rigctl_bind_addr[0] != '\0') {
+    if (inet_pton(AF_INET, rigctl_bind_addr, &server_address.sin_addr) != 1) {
+      t_print("%s: invalid rigctl_bind_addr '%s', TCP server not started\n", __func__, rigctl_bind_addr);
+      close(server_socket);
+      server_socket = -1;
+      return NULL;
+    }
+  } else {
+    server_address.sin_addr.s_addr = htonl(INADDR_ANY);
+  }
+
   server_address.sin_port = htons(port);
   if (bind(server_socket, (struct sockaddr *) &server_address, sizeof(server_address)) < 0) {
     t_perror("rigctl_server: listen socket bind failed");

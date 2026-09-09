@@ -71,6 +71,7 @@ extern void stop_lpf_monitor (void);
 extern void launch_rigctld_monitor (void);
 extern int cat_control;
 extern unsigned int rigctl_tcp_port;
+extern char rigctl_bind_addr[64]; // empty: listen on all interfaces
 extern volatile int rigctl_tcp_enable;
 extern int rigctl_tcp_andromeda;
 extern int rigctl_tcp_autoreporting;

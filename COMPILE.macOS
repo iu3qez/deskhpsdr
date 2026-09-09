@@ -32,6 +32,18 @@ Start the Terminal app and install the needed Xcode command line tools:
 PLEASE DON'T EDIT the Makefile ! Do all changes only in the make.config.deskhpsdr ! This file will be read from the Makefile and
 include your own settings into the Makefile without changing the Makefile itself.
 
+3.1 Optional: permessage-deflate compression for the TCI server
+
+The TCI server only offers the WebSocket permessage-deflate extension when it is linked
+against the locally built libwebsockets, because the Homebrew package is built without
+extension support. zlib ships with macOS, so it is enough to run:
+
+~/src/deskhpsdr$ ./build-libwebsockets.sh
+
+The Makefile picks up the local libwebsockets automatically as soon as it exists.
+Without this step deskHPSDR compiles and runs as before, and logs at startup that
+permessage-deflate is not available.
+
 4. Compile the deskHPSDR
 After Pt.3 we can now compile deskHPSDR:
 ~/src/deskhpsdr$ make install

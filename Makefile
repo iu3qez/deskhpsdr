@@ -500,7 +500,7 @@ LWS_LOCAL_COMPLETE := $(and $(wildcard $(LWS_LOCAL_BUILD)/include/libwebsockets.
 ifneq ($(LWS_LOCAL_COMPLETE),)
 $(info Local libwebsockets found, using static library.)
 LWS_CFLAGS := -I./$(LWS_LOCAL_BUILD)/include
-LWS_LIBS := ./$(LWS_LOCAL_LIB)
+LWS_LIBS := ./$(LWS_LOCAL_LIB) -lz
 else
 ifeq ($(UNAME_S), Darwin)
 $(info Local libwebsockets not found, using Homebrew libwebsockets.)
@@ -520,10 +520,10 @@ else
 TCI_LIBS=$(LWS_LIBS) `$(PKG_CONFIG) --libs openssl` `$(PKG_CONFIG) --libs libcap`
 endif
 
-TCI_SOURCES=src/tci.c src/tci_audio.c
-TCI_OBJS=src/tci.o src/tci_audio.o
+TCI_SOURCES=src/tci.c src/tci_audio.c src/tci_spectrum.c
+TCI_OBJS=src/tci.o src/tci_audio.o src/tci_spectrum.o
 CPP_INCLUDE += `$(PKG_CONFIG) --cflags openssl` $(LWS_CFLAGS)
-CPP_SOURCES += src/tci.c src/tci_audio.c
+CPP_SOURCES += src/tci.c src/tci_audio.c src/tci_spectrum.c
 
 ##############################################################################
 #
@@ -1003,6 +1003,19 @@ endif
 .PHONY:	cppcheck
 cppcheck:
 	cppcheck $(CPP_OPTIONS) $(CPP_INCLUDE) $(CPP_DEFINES) $(SOURCES) $(CPP_SOURCES)
+
+#############################################################################
+#
+#  Standalone harness for the pure TCI spectrum module. No GTK, no WDSP,
+#  no libwebsockets: plain compiler and -I./src only.
+#
+#############################################################################
+
+.PHONY:	tci-spectrum-test
+tci-spectrum-test:
+	$(CC) -std=c11 -Wall -Wextra -I./src -o tci_spectrum_test tests/tci_spectrum_test.c src/tci_spectrum.c
+	./tci_spectrum_test
+	@rm -f tci_spectrum_test
 
 #############################################################################
 #

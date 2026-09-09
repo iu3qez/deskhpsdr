@@ -37,6 +37,24 @@ typedef enum {
 void pan_delete_dx_spot(const char *dxcall);
 void pan_add_dx_spot(double freq_khz, const char *dxcall);
 void pan_add_dx_spot_source(double freq_khz, const char *dxcall, PAN_SPOT_SOURCE source);
+//
+// Pixel -> Hz and raw -> dBm mapping of a receiver (KTD2).
+//
+// low_hz is the absolute frequency of rx->pixel_samples[0], i.e. the mapping
+// taken at pan = 0; the frequency of bin i is low_hz + i * hz_per_pixel.
+// soffset is the dB correction the panadapter adds to every raw bin.
+//
+typedef struct _rx_pan_mapping {
+  int vfo_id;             // VFO the panadapter shows for this receiver
+  long long center_hz;    // vfo[vfo_id].frequency after the CW sidetone shift
+  long long cw_shift_hz;  // pixel shift in Hz applied in CWU (+) / CWL (-)
+  long long dc_offset_hz; // mode DC offset (AM/SAM), drawn as pan_display_shift
+  double hz_per_pixel;    // width of one bin of rx->pixel_samples
+  long long low_hz;       // absolute frequency of rx->pixel_samples[0]
+  double soffset;         // dB correction: calibration, attenuation, preamps
+} RX_PAN_MAPPING;
+
+void rx_panadapter_get_mapping(const RECEIVER *rx, RX_PAN_MAPPING *map);
 void rx_panadapter_peak_hold_clear(RECEIVER *rx);
 void rx_panadapter_update(RECEIVER* rx);
 void rx_panadapter_init(RECEIVER *rx, int width, int height);

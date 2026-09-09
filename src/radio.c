@@ -2884,11 +2884,13 @@ static void radio_restore_state(void) {
   GetPropI0("radio.display_pacurr",                          display_pacurr);
   GetPropI0("tci_enable",                                    tci_enable);
   GetPropI0("tci_port",                                      tci_port);
+  GetPropS0("tci_bind_addr",                                 tci_bind_addr);
   GetPropI0("tci_txonly",                                    tci_txonly);
   GetPropI0("rigctl_tcp_enable",                             rigctl_tcp_enable);
   GetPropI0("rigctl_tcp_andromeda",                          rigctl_tcp_andromeda);
   GetPropI0("rigctl_tcp_autoreporting",                      rigctl_tcp_autoreporting);
   GetPropI0("rigctl_port_base",                              rigctl_tcp_port);
+  GetPropS0("rigctl_bind_addr",                              rigctl_bind_addr);
   GetPropI0("rigctl_debug",                                  rigctl_debug);
   GetPropI0("tci_debug",                                     tci_debug);
   GetPropI0("use_rigctld",                                   use_rigctld);
@@ -3191,11 +3193,13 @@ void radio_save_state(void) {
   SetPropI0("radio.display_pacurr",                          display_pacurr);
   SetPropI0("tci_enable",                                    tci_enable);
   SetPropI0("tci_port",                                      tci_port);
+  SetPropS0("tci_bind_addr",                                 tci_bind_addr);
   SetPropI0("tci_txonly",                                    tci_txonly);
   SetPropI0("rigctl_tcp_enable",                             rigctl_tcp_enable);
   SetPropI0("rigctl_tcp_andromeda",                          rigctl_tcp_andromeda);
   SetPropI0("rigctl_tcp_autoreporting",                      rigctl_tcp_autoreporting);
   SetPropI0("rigctl_port_base",                              rigctl_tcp_port);
+  SetPropS0("rigctl_bind_addr",                              rigctl_bind_addr);
   SetPropI0("rigctl_debug",                                  rigctl_debug);
   SetPropI0("tci_debug",                                     tci_debug);
   SetPropI0("use_rigctld",                                   use_rigctld);
