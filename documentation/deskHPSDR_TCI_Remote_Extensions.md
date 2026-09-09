@@ -174,6 +174,17 @@ freshest data, at the cost of gaps in `seq`. A gap in `seq` is exactly
 the count of replaced frames, and is the signal the probe (section 7)
 reports as "seq gaps".
 
+**Priority is audio first, always.** The slot is written only when the
+client's ordinary queue (text replies, RX audio, I/Q) is empty. If that
+client also runs the TCI audio or I/Q stream over a link that cannot
+carry it, the queue never drains, the slot is never written, the ladder
+steps down and no spectrum frame arrives until the audio catches up.
+This is deliberate: a stalled waterfall for a few seconds is acceptable,
+a dropped audio frame is not, so the server never interleaves spectrum
+frames ahead of audio. On a bandwidth-limited WAN keep audio on a
+separate transport (for example Mumble) and use TCI for commands and
+spectrum only.
+
 ### 2.5 Span rules
 
 `spectrum_span:<rx>,<low>,<high>;` crops the stream to a Hz range,
