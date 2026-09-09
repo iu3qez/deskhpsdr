@@ -18,7 +18,7 @@ execution: code
 - **Authority hierarchy:** il documento dei requisiti in `origin` decide il prodotto (R-ID); questo piano decide il meccanismo (KTD); l'implementatore decide i nomi delle funzioni e i dettagli locali entro le unità.
 - **Stop conditions:** fermarsi e chiedere se una modifica richiesta cambia il comportamento del server TCI per un client che non ha negoziato l'estensione (R1), se il formato frame di KTD1 deve cambiare dopo che TOTW lo ha adottato, o se il produttore spettro aumenta il carico del ciclo di display oltre il 10 % misurato con `display_debug`.
 - **Execution profile:** un fork personale, un branch, unità in ordine di dipendenza; ogni unità compilabile e verificabile da sola; rebuild completo dopo ogni modifica a un header (il Makefile non traccia le dipendenze dagli header).
-- **Tail ownership:** verifica su banco con Hermes-Lite 2 e simulazione WAN spettano all'operatore (Simo); i test dell'harness C e la sonda Python spettano all'implementatore.
+- **Tail ownership:** verifica su banco con la radio ANAN dell'operatore (schede Orion/Angelia: due ADC, attenuatore a step, nessun gain RX) e simulazione WAN spettano all'operatore (Simo); i test dell'harness C e la sonda Python spettano all'implementatore. Le radio a un solo ADC con gain (Hermes-Lite 2) non sono sul banco: quel ramo si verifica solo per lettura del codice.
 
 ---
 
@@ -89,7 +89,7 @@ deskHPSDR espone via TCI solo lo stream IQ float32 al sample rate del SDR (≥ 3
 - AE2. **Covers R3, R10.** Given display locale a 10 fps, When il client invia `spectrum_start:0,512,20;`, Then la risposta è `spectrum_start:0,512,10;` e i frame arrivano a ≤ 10 al secondo.
 - AE3. **Covers R5.** Given sample rate 192 kHz centrato a 14,100 MHz, When il client invia `spectrum_span:0,14000000,14350000;`, Then la risposta riporta lo span ottenuto `14004000…14196000` (ritagliato ai limiti disponibili, arrotondato ai pixel) e i frame successivi coprono quello span.
 - AE4. **Covers R9.** Given radio non-duplex con client iscritto, When l'operatore va in TX, Then il client riceve `spectrum_state:0,0;` e nessun frame; When torna in RX, Then riceve `spectrum_state:0,1;` e i frame riprendono senza reinviare `spectrum_start`.
-- AE5. **Covers R7.** Given Hermes-Lite 2, When il client invia `rx_att_ex:0;`, Then la risposta è `rx_att_ex:0,gain,<valore>,-12,48,1,0;`. When invia `rx_att_ex:0,12;`, Then il gain RF dell'ADC 0 vale 12 dB per entrambi i receiver e la risposta riporta il nuovo valore.
+- AE5. **Covers R7.** Given una ANAN con schede Orion/Angelia (due ADC, attenuatore), When il client invia `rx_att_ex:0;`, Then la risposta è `rx_att_ex:0,att,<valore>,0,31,1,0;`. When invia `rx_att_ex:0,12;`, Then l'attenuatore dell'ADC 0 vale 12 dB, il receiver 1 sull'ADC 1 non cambia, e la risposta riporta il nuovo valore. Su una radio a un solo ADC (Hermes-Lite 2, tipo `gain`) lo stesso comando vale per entrambi i receiver: caso verificato per lettura del codice, non sul banco.
 - AE6. **Covers R7.** Given VFO A su 20 m, When il client invia `band_ex:0,20;`, Then la frequenza non cambia e la risposta è `band_ex:0,20;`. When invia `band_ex:0,20,next;`, Then il VFO passa alla voce successiva del band-stack dei 20 m.
 - AE7. **Covers R4.** Given un link con RTT 60 ms, 2 % di perdita e banda limitata a 32 kbit/s, sotto i ~40 kbit/s dello spettro a 512 bin e 10 fps, When il socket si satura e lo slot sostituisce 3 frame in un secondo, Then il server emette `spectrum_fps:0,5;` e scende a 5 fps; dopo 10 s senza sostituzioni risale di un gradino e lo comunica.
 
@@ -295,13 +295,13 @@ U1 → U2 → U3 → U4. U5 dipende solo da U1 per le convenzioni di risposta e 
   4. Risposte in minuscolo/maiuscolo secondo `tci_cmd_name()`.
 - **Patterns to follow:** `tci_set_vfo()` per il mapping rx→VFO, `tci_begin_apply()` e i broadcast espliciti; `tci_cmd_rtty_enable()` per la validazione degli argomenti; `ext_set_af_gain()` in `src/ext.c` per applicare un valore dal thread TCI senza popup.
 - **Test scenarios:**
-  - **Covers AE5.** HL2 (un ADC, due receiver): query → `gain,-12,48,1,0`; set 12 su rx 1 → cambia anche rx 0 (stesso ADC) e lo slider locale si aggiorna; set 60 → rifiutato, valore invariato.
-  - Radio con attenuatore e due ADC (ANAN-100D/200D/7000/8000/G2): query → `att,0,31,1,<adc>`; set su receiver 1 non attivo → cambia solo l'ADC 1, il receiver attivo non cambia.
+  - **Covers AE5.** ANAN Orion/Angelia (due ADC, attenuatore; la radio del banco): query → `att,<valore>,0,31,1,<adc>`; set 12 su rx 0 → lo slider locale si aggiorna; set su receiver 1 non attivo → cambia solo l'ADC 1, il receiver attivo non cambia; set 40 → rifiutato, valore invariato.
+  - Radio a un solo ADC con gain (Hermes-Lite 2, non disponibile sul banco): query → `gain,<valore>,-12,48,1,0`; set su rx 1 → cambia anche rx 0 (stesso ADC). Verifica per lettura del codice.
   - Radio senza né att né gain → `none`, set ignorato con risposta.
   - `rx_att_ex:1,...` con `receivers == 1` → rifiutato.
   - **Covers AE6.** Stessa banda senza `next` → no-op; con `next` → band-stack avanza; verifica che `vfo:` broadcast arrivi agli altri client.
   - Titolo sconosciuto → risposta di errore, nessun cambio.
-  - Banda la cui voce di band-stack è fuori dai limiti della radio (es. `2300` su HL2) → rifiutata prima di toccare drive e split.
+  - Banda la cui voce di band-stack è fuori dai limiti della radio (es. `2300` su una radio HF) → rifiutata prima di toccare drive e split.
   - Due client che inviano `band_ex` entro 200 ms → il secondo è bloccato dal set-lock.
 - **Verification:** sonda Python con sottocomandi `att` e `band`; la frequenza e lo spettro remoto seguono il cambio.
 
