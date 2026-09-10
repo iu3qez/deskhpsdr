@@ -74,6 +74,22 @@ Chiusi il bind address e `rx_att_ex`. Restano:
 - `spectrum_start` durante una pausa del display puo' leggere `displaying` fuori mutex. Corsa stretta, effetto: stato 1 e poi 0.
 - Il Makefile non traccia le dipendenze dagli header: dopo un merge che tocca un `.h` serve `make clean && make`, altrimenti oggetti compilati contro un layout di struct vecchio.
 
+## Aperto e NON bloccante: le misure su loopback dello stream a bin
+
+Deciso il 2026-09-10 di rimandare. I punti 1 e 2 delle verifiche mancanti, cioe' il confronto del floor e il delta di carico con un client sottoscritto, si eseguono in sessanta secondi su loopback e sono stati giudicati **microtest poco significativi**: misurano un percorso senza latenza, senza perdita e senza un client vero, cioe' tre condizioni che non somigliano a niente di quello per cui il progetto esiste.
+
+La verifica che conta e' quella end-to-end: il fork TOTW che consuma lo stream su un link WAN reale dentro WireGuard. Quella esercita in una volta sola il formato del frame, la scala fps sotto saturazione, la banda con deflate e il comportamento del client, e lo fa nelle condizioni d'uso. Le misure su loopback andranno fatte allora, come base di confronto, non prima e non da sole.
+
+Nessuna delle unita' del piano client dipende da queste misure, quindi lo sviluppo del client puo' partire. Restano da fare, non da dimenticare:
+
+- confronto del floor fra traccia locale e bin ricevuti;
+- delta di carico con un client sottoscritto, contro la base 18,6 % piu' 17,9 % gia' misurata;
+- banda effettiva, il cui valore atteso senza deflate e' 608 byte a frame per 10 frame, cioe' 48,6 kbit/s;
+- continuita' della sequenza, che su loopback deve avere zero salti;
+- `band_ex` con `--next`.
+
+Nota operativa: il fork `iu3qez/deskhpsdr` ha le issue disabilitate su GitHub, quindi non esiste un tracker dove depositare voci come questa. Finche' resta cosi', questo handoff e' il tracker.
+
 ## Debiti di funzionalita' di deskHPSDR
 
 Emersi lavorando, non sono nostri e non sono stati corretti tranne dove indicato. Hanno tutti la stessa forma: **il componente fallisce verso il silenzio invece che verso l'errore**, e l'operatore non ha modo di distinguere "non funziona" da "non c'e'".
