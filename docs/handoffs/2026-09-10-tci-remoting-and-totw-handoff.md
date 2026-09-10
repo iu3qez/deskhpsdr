@@ -96,7 +96,23 @@ Emersi lavorando, non sono nostri e non sono stati corretti tranne dove indicato
 
 - **#8, "https server required for PTT function"**: conferma dall'utenza che il requisito CLI-09, cioe' l'unita' C8, e' un bisogno gia' segnalato e non una nostra aggiunta teorica.
 - **#9, "RX audio lags"**: il ritardo audio peggiora progressivamente e si azzera solo spegnendo e riaccendendo l'audio RX. E' lo scheduler naive gia' descritto nei requisiti. Il nostro piano **non** lo affronta, perche' CLI-08 e' fuori scopo con DEC-01 = A. Il fork eredita il problema.
-- **#12, "There is some humming sound in the CW carriers"**: da verificare, ma potrebbe essere lo stesso difetto che abbiamo diagnosticato per CLI-01. Se l'header da 8 byte assunto per Thetis fosse sbagliato anche per Thetis, i byte di header residuo verrebbero riprodotti come campioni, e a 512 campioni su 48 kHz il risultato e' un ronzio a 93,75 Hz. **E' un'ipotesi, non un fatto**: serve un dump di un frame audio reale di Thetis per confermarla. Se regge, la nostra correzione di C1 chiude anche una issue di n9bc, ed e' un buon motivo per aprire un dialogo con lui prima di divergere troppo.
+- **#12, "There is some humming sound in the CW carriers"**: **confermato leggendo il sorgente di Thetis**, non piu' un'ipotesi. `buildStreamPayload()` in `Project Files/Source/Console/TCIServer.cs` di `ramdor/Thetis` alloca 64 byte piu' payload, scrive otto `uint32` (receiver, sample rate, tipo di campione, zero, zero, lunghezza, tipo di stream, canali) seguiti da otto parole di riserva, e copia i campioni a partire da offset 64. E' lo stesso identico layout della nostra `TCI_STREAM_HEADER`, campo per campo.
+
+  Quindi l'header "non standard da 8 byte" che il commento di TOTW dichiara ricavato per via sperimentale **non esiste**: sono i primi otto byte dell'header standard letti con un layout inventato, che combacia solo perche' il receiver 0 riempie di zeri i posti giusti. TOTW suona da offset 8 anche i frame di Thetis, quindi si porta 56 byte di header nel flusso audio. Quei byte sono interi piccoli e zeri: letti come `float32` sono denormali, cioe' silenzio, quindi l'artefatto e' un buco periodico e non rumore. La dissolvenza di 64 campioni ai bordi di ogni buffer, che nel sorgente di TOTW e' commentata come rimedio ai clic, lo ammorbidisce in una modulazione di ampiezza a 93,75 Hz: un ronzio, udibile soprattutto su una portante CW stabile.
+
+  Conseguenza: l'unita' C1 del piano client non e' solo compatibilita' con deskHPSDR, ripara TOTW anche contro Thetis. Ed e' materiale solido per aprire un dialogo con n9bc, perche' gli si porta una diagnosi con i riferimenti al suo sorgente e a quello di Thetis.
+
+  Lezione di metodo: la risposta stava in venti righe di codice pubblico, e per due volte in questa vicenda, prima dall'autore di TOTW e poi da me, e' stata sostituita da una deduzione.
+
+## La priorita' audio non morde nella configurazione scelta
+
+La specifica avverte al paragrafo 2.4 che lo slot dello spettro e' subordinato alla FIFO, quindi con audio TCI attivo su un link saturo lo spettro resta affamato. E' il rilievo #5 della code review, accettato come progettato.
+
+Quell'avvertimento resta vero come regola, ma **nella configurazione WAN scelta non si applica**. Su WAN l'audio va su Mumble (DEC-01 = A), quindi il client browser non manda mai `audio_start`; in modalita' a bin non chiede nemmeno l'IQ. Nella FIFO restano solo le risposte testuali ai comandi, sporadiche e minuscole, e lo slot dello spettro viene servito quasi a ogni ciclo.
+
+Vale la pena saperlo perche' chi legge la specifica fra sei mesi trova un avvertimento severo senza il contesto che lo disinnesca. Torna a mordere solo se qualcuno riattiva l'audio o l'IQ su TCI sopra un link stretto.
+
+Da qui anche la conferma che Opus non entra mai nel nostro codice: Mumble lo usa al suo interno, ma su un trasporto separato in UDP con il suo FEC. Nel nostro header audio `format` vale `FLOAT32` e `codec` resta zero, cioe' PCM non compresso. Ed e' proprio per questo che l'errore di offset descritto sopra e' udibile: con PCM grezzo qualunque sequenza di byte e' audio valido, mentre un codec avrebbe scartato il frame con un errore diagnosticabile.
 
 ## Come riprendere
 
