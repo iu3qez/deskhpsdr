@@ -2495,7 +2495,7 @@ void display_panadapter_messages(cairo_t *cr, int width, unsigned int fps) {
       if (adc0_overload && !adc1_overload) {
         if (active_receiver->panadapter_ovf_on) {
 #if defined(__AUTOG__)
-          if (device == DEVICE_HERMES_LITE2 || device == NEW_DEVICE_HERMES_LITE2) {
+          if (device == DEVICE_HERMES_LITE2) {
             if (!autogain_enabled) {
               cairo_show_text(cr, "ADC0 OVF » Decrease RxPGA Gain !");
             } else {
@@ -2505,7 +2505,7 @@ void display_panadapter_messages(cairo_t *cr, int width, unsigned int fps) {
             cairo_show_text(cr, "ADC0 overload");
           }
 #else
-          if (device == DEVICE_HERMES_LITE2 || device == NEW_DEVICE_HERMES_LITE2) {
+          if (device == DEVICE_HERMES_LITE2) {
             cairo_show_text(cr, "ADC0 OVF » Decrease RxPGA Gain !");
           } else {
             cairo_show_text(cr, "ADC0 overload");
@@ -2807,6 +2807,15 @@ void display_panadapter_messages(cairo_t *cr, int width, unsigned int fps) {
       snprintf(text, sizeof(text), "%0.0f°C", max1);
       flag = 1;
       break;
+    case DEVICE_G2E:
+    case NEW_DEVICE_G2E:
+      // G2E slow ADCs use 3.3 V: 3.3 * (ADC0 / 4095) * ((22.0 + 1.0) / 1.1)
+      v = 0.0168498 * ADC0;
+      if (v < 0) { v = 0; }
+      if (count == 0) { max1 = v; }
+      snprintf(text, sizeof(text), "%0.1fV", max1);
+      flag = 1;
+      break;
     case DEVICE_ORION2:
     case NEW_DEVICE_ORION2:
     case NEW_DEVICE_SATURN:
@@ -2835,6 +2844,15 @@ void display_panadapter_messages(cairo_t *cr, int width, unsigned int fps) {
       if (v < 0) { v = 0; }
       if (count == 0) { max2 = v; }
       snprintf(text, sizeof(text), "%0.0fmA", max2);
+      flag = 1;
+      break;
+    case DEVICE_G2E:
+    case NEW_DEVICE_G2E:
+      // ((ADC1*3300)/4095 - Voff)/Sens, Voff = 360, Sens = 120
+      v = 0.00671387 * ADC1 - 3.0;
+      if (v < 0) { v = 0; }
+      if (count == 0) { max2 = v; }
+      snprintf(text, sizeof(text), "%0.1fA", max2);
       flag = 1;
       break;
     case DEVICE_ORION2:

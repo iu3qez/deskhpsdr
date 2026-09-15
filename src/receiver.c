@@ -39,6 +39,7 @@
 #include "property.h"
 #include "radio.h"
 #include "receiver.h"
+#include "toolset.h"
 #include "transmitter.h"
 #include "vfo.h"
 #include "meter.h"
@@ -398,9 +399,15 @@ void rx_save_state(const RECEIVER *rx) {
   }
   SetPropI1("receiver.%d.pan", rx->id,                          rx->pan);
   SetPropI1("receiver.%d.eq_enable", rx->id,                    rx->eq_enable);
+  SetPropI1("receiver.%d.eq_curve_degree", rx->id,               rx->eq_curve_degree);
+  SetPropI1("receiver.%d.eq_curve_r", rx->id,                    rx->eq_curve_r);
+  SetPropI1("receiver.%d.eq_curve_umethod", rx->id,              rx->eq_curve_umethod);
   for (int i = 0; i < 13; i++) {
     SetPropF2("receiver.%d.eq_freq[%d]", rx->id, i,             rx->eq_freq[i]);
     SetPropF2("receiver.%d.eq_gain[%d]", rx->id, i,             rx->eq_gain[i]);
+    if (i < 12) {
+      SetPropF2("receiver.%d.eq_weight[%d]", rx->id, i,           rx->eq_weight[i]);
+    }
   }
 }
 
@@ -548,10 +555,19 @@ void rx_restore_state(RECEIVER *rx) {
   }
   GetPropI1("receiver.%d.pan", rx->id,                          rx->pan);
   GetPropI1("receiver.%d.eq_enable", rx->id,                    rx->eq_enable);
+  GetPropI1("receiver.%d.eq_curve_degree", rx->id,               rx->eq_curve_degree);
+  GetPropI1("receiver.%d.eq_curve_r", rx->id,                    rx->eq_curve_r);
+  GetPropI1("receiver.%d.eq_curve_umethod", rx->id,              rx->eq_curve_umethod);
   for (int i = 0; i < 13; i++) {
     GetPropF2("receiver.%d.eq_freq[%d]", rx->id, i,             rx->eq_freq[i]);
     GetPropF2("receiver.%d.eq_gain[%d]", rx->id, i,             rx->eq_gain[i]);
+    if (i < 12) {
+      GetPropF2("receiver.%d.eq_weight[%d]", rx->id, i,           rx->eq_weight[i]);
+    }
   }
+  /* Preserve the complete EQ control-point triplet when restoring old or
+   * hand-edited profiles with unsorted frequencies. */
+  sort_rx_eq(rx);
 }
 
 void rx_reconfigure(RECEIVER *rx, int height) {
@@ -852,8 +868,10 @@ RECEIVER *rx_create_receiver(int id, int pixels, int width, int height) {
     case DEVICE_HERMES:
     case DEVICE_HERMES_LITE:
     case DEVICE_HERMES_LITE2:
+    case DEVICE_G2E:
     case NEW_DEVICE_ATLAS:
     case NEW_DEVICE_HERMES:
+    case NEW_DEVICE_G2E:
       rx->adc = 0;
       break;
     default:
@@ -1026,6 +1044,12 @@ RECEIVER *rx_create_receiver(int id, int pixels, int width, int height) {
   rx->zoom = 1;
   rx->pan = 0;
   rx->eq_enable = 0;
+  rx->eq_curve_degree = 0;
+  rx->eq_curve_r = 0;
+  rx->eq_curve_umethod = 0;
+  for (int i = 0; i < 12; i++) {
+    rx->eq_weight[i] = 1.0;
+  }
   rx->eq_freq[0]  =     0.0;
   rx->eq_freq[1]  =    50.0;
   rx->eq_freq[2]  =   100.0;
@@ -1465,6 +1489,11 @@ static void rx_process_buffer(RECEIVER *rx) {
   float tci_rx_samples[rx->output_samples * TCI_AUDIO_CHANNELS];
   // Without DUPLEX; xmit will always be false.
   int xmit = radio_is_transmitting();
+  // PRE/POST TX Monitor owns the active RX local audio sink while it is
+  // actually producing monitor audio. Do not feed a second 48 kHz producer
+  // into the same local output stream during DUPLEX TX.
+  int tx_monitor_replaces_local_audio =
+          xmit && rx == active_receiver && tx_monitor_audio_active();
   for (int i = 0; i < rx->output_samples; i++) {
     double left_sample = rx->audio_output_buffer[i * 2];
     double right_sample = rx->audio_output_buffer[(i * 2) + 1];
@@ -1533,7 +1562,7 @@ static void rx_process_buffer(RECEIVER *rx) {
     if (right_sample >  1.0f) { right_sample =  1.0f; }
     if (right_sample < -1.0f) { right_sample = -1.0f; }
     short right_audio_sample = (short)(right_sample * 32767.0f);
-    if (rx->local_audio) {
+    if (rx->local_audio && !tx_monitor_replaces_local_audio) {
       audio_write(rx, (float) left_sample, (float) right_sample);
     }
     if (rx == active_receiver) {
@@ -1974,13 +2003,24 @@ void rx_set_analyzer(const RECEIVER *rx) {
 }
 
 void rx_begin_off(const RECEIVER *rx) {
+#ifdef WDSP1
+  // WDSP 1.x has no separate WaitChannelFlush() API.  Use its original
+  // synchronous channel shutdown so the RX channel is fully stopped before
+  // the TX transition continues.
+  SetChannelState(rx->id, 0, 1);
+#else
   // Start receiver slew-down without waiting for the WDSP flush.
   SetChannelState(rx->id, 0, 0);
+#endif
 }
 
 void rx_wait_off(const RECEIVER *rx) {
   // Complete a previously started receiver shutdown.
+#ifndef WDSP1
   WaitChannelFlush(rx->id, 100);
+#else
+  (void) rx;
+#endif
 }
 
 void rx_off(const RECEIVER *rx) {
@@ -2215,6 +2255,10 @@ void rx_set_equalizer(RECEIVER *rx) {
   // Apply the equalizer parameters stored in rx
   //
   SetRXAEQProfile(rx->id, 12, rx->eq_freq, rx->eq_gain);
+#ifndef WDSP1
+  SetRXAEQCurve(rx->id, rx->eq_curve_degree, rx->eq_curve_r, rx->eq_curve_umethod);
+  SetRXAEQWeights(rx->id, 12, rx->eq_weight);
+#endif
   SetRXAEQRun(rx->id, rx->eq_enable);
 }
 
@@ -2350,13 +2394,14 @@ void rx_set_noise(const RECEIVER *rx) {
   //
   // Enable exactly the selected noise-reduction engine.
   //
+  int nr = rx->nr;
 #ifdef WDSP1
-  if (rx->nr > NR_MAX) {
-    rx->nr = 0;
+  if (nr > NR_MAX) {
+    nr = 0;
   }
 #endif
   if (nr_allowed) {
-    switch (rx->nr) {
+    switch (nr) {
     case 1:
       SetRXAANRRun(rx->id, 1);
       break;

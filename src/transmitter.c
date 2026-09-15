@@ -21,6 +21,7 @@
 
 #include <gtk/gtk.h>
 #include <math.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -83,18 +84,11 @@ int cw_key_up = 0;
 int cw_key_down = 0;
 int cw_not_ready = 1;
 
-static const float fir_bandpass_300_2700[] = {
-  -0.001149, -0.001942, -0.001656, -0.000186,  0.002823,  0.006602,
-  0.009652,  0.009957,  0.004892, -0.006310, -0.020976, -0.033399,
-  -0.036293, -0.023005,  0.008005,  0.055879,  0.112121,  0.162074,
-  0.191579,  0.191579,  0.162074,  0.112121,  0.055879,  0.008005,
-  -0.023005, -0.036293, -0.033399, -0.020976, -0.006310,  0.004892,
-  0.009957,  0.009652,  0.006602,  0.002823, -0.000186, -0.001656,
-  -0.001942, -0.001149
-};
-#define FIR_TAPS (sizeof(fir_bandpass_300_2700) / sizeof(float))
-static float fir_state[FIR_TAPS] = {0.0f};
-static int mon_enabled = 0;
+// Monitor the TX audio locally. POST monitors the processed WDSP TX output;
+// PRE monitors the effective WDSP input after Mic PreAmp and Mic Gain.
+static _Atomic int mon_enabled = 0;
+static _Atomic int tx_monitor_post = 1;
+static _Atomic double tx_monitor_gain = 0.5;
 
 double ctcss_frequencies[CTCSS_FREQUENCIES] = {
   67.0,  71.9,  74.4,  77.0,  79.7,  82.5,  85.4,  88.5,  91.5,  94.8,
@@ -353,6 +347,8 @@ void tx_save_state(const TRANSMITTER *tx) {
   SetPropF1("transmitter.%d.am_carrier_level",  tx->id,               tx->am_carrier_level);
   SetPropI1("transmitter.%d.drive",             tx->id,               tx->drive);
   SetPropF1("transmitter.%d.mic_gain",          tx->id,               tx->mic_gain);
+  SetPropI1("transmitter.%d.monitor_post",      tx->id,               atomic_load_explicit(&tx_monitor_post,
+      memory_order_relaxed));
   SetPropI1("transmitter.%d.tune_drive",        tx->id,               tx->tune_drive);
   SetPropI1("transmitter.%d.tune_drive_step",   tx->id,               tx->tune_drive_step);
   SetPropI1("transmitter.%d.tune_drive_reset_on_band_change", tx->id, tx->tune_drive_reset_on_band_change);
@@ -368,6 +364,12 @@ void tx_save_state(const TRANSMITTER *tx) {
   SetPropF1("transmitter.%d.compressor_level",  tx->id,               tx->compressor_level);
   SetPropI1("transmitter.%d.cfc",               tx->id,               tx->cfc);
   SetPropI1("transmitter.%d.cfc_eq",            tx->id,               tx->cfc_eq);
+  SetPropI1("transmitter.%d.cfc_comp_curve_degree", tx->id,            tx->cfc_comp_curve_degree);
+  SetPropI1("transmitter.%d.cfc_comp_curve_r",      tx->id,            tx->cfc_comp_curve_r);
+  SetPropI1("transmitter.%d.cfc_comp_curve_umethod", tx->id,           tx->cfc_comp_curve_umethod);
+  SetPropI1("transmitter.%d.cfc_post_curve_degree", tx->id,            tx->cfc_post_curve_degree);
+  SetPropI1("transmitter.%d.cfc_post_curve_r",      tx->id,            tx->cfc_post_curve_r);
+  SetPropI1("transmitter.%d.cfc_post_curve_umethod", tx->id,           tx->cfc_post_curve_umethod);
   SetPropI1("transmitter.%d.dexp",              tx->id,               tx->dexp);
   SetPropI1("transmitter.%d.dexp_exp",          tx->id,               tx->dexp_exp);
   SetPropI1("transmitter.%d.dexp_filter",       tx->id,               tx->dexp_filter);
@@ -384,12 +386,22 @@ void tx_save_state(const TRANSMITTER *tx) {
   SetPropI1("transmitter.%d.display_filled",    tx->id,               tx->display_filled);
   SetPropI1("transmitter.%d.eq_enable",         tx->id,               tx->eq_enable);
   SetPropI1("transmitter.%d.eq_ctfmode",        tx->id,               tx->eq_ctfmode);
+  SetPropI1("transmitter.%d.eq_curve_degree",   tx->id,               tx->eq_curve_degree);
+  SetPropI1("transmitter.%d.eq_curve_r",        tx->id,               tx->eq_curve_r);
+  SetPropI1("transmitter.%d.eq_curve_umethod",  tx->id,               tx->eq_curve_umethod);
+  for (int i = 0; i < 12; i++) {
+    SetPropF2("transmitter.%d.eq_weight[%d]",   tx->id, i,            tx->eq_weight[i]);
+  }
   for (int i = 0; i < 13; i++) {
     SetPropF2("transmitter.%d.eq_freq[%d]",     tx->id, i,            tx->eq_freq[i]);
     SetPropF2("transmitter.%d.eq_gain[%d]",     tx->id, i,            tx->eq_gain[i]);
     SetPropF2("transmitter.%d.cfc_freq[%d]",    tx->id, i,            tx->cfc_freq[i]);
     SetPropF2("transmitter.%d.cfc_lvl[%d]",     tx->id, i,            tx->cfc_lvl[i]);
     SetPropF2("transmitter.%d.cfc_post[%d]",    tx->id, i,            tx->cfc_post[i]);
+    if (i < 12) {
+      SetPropF2("transmitter.%d.cfc_comp_weight[%d]", tx->id, i,        tx->cfc_comp_weight[i]);
+      SetPropF2("transmitter.%d.cfc_post_weight[%d]", tx->id, i,        tx->cfc_post_weight[i]);
+    }
   }
   SetPropI1("transmitter.%d.lev_attack",        tx->id,               tx->lev_attack);
   SetPropI1("transmitter.%d.lev_decay",         tx->id,               tx->lev_decay);
@@ -483,6 +495,9 @@ static void tx_restore_state(TRANSMITTER *tx) {
   GetPropF1("transmitter.%d.am_carrier_level",  tx->id,               tx->am_carrier_level);
   GetPropI1("transmitter.%d.drive",             tx->id,               tx->drive);
   GetPropF1("transmitter.%d.mic_gain",          tx->id,               tx->mic_gain);
+  int monitor_post = 1;
+  GetPropI1("transmitter.%d.monitor_post",      tx->id,               monitor_post);
+  atomic_store_explicit(&tx_monitor_post, monitor_post ? 1 : 0, memory_order_relaxed);
   GetPropI1("transmitter.%d.tune_drive",        tx->id,               tx->tune_drive);
   GetPropI1("transmitter.%d.tune_drive_step",   tx->id,               tx->tune_drive_step);
   GetPropI1("transmitter.%d.tune_drive_reset_on_band_change", tx->id, tx->tune_drive_reset_on_band_change);
@@ -498,6 +513,12 @@ static void tx_restore_state(TRANSMITTER *tx) {
   GetPropF1("transmitter.%d.compressor_level",  tx->id,               tx->compressor_level);
   GetPropI1("transmitter.%d.cfc",               tx->id,               tx->cfc);
   GetPropI1("transmitter.%d.cfc_eq",            tx->id,               tx->cfc_eq);
+  GetPropI1("transmitter.%d.cfc_comp_curve_degree", tx->id,            tx->cfc_comp_curve_degree);
+  GetPropI1("transmitter.%d.cfc_comp_curve_r",      tx->id,            tx->cfc_comp_curve_r);
+  GetPropI1("transmitter.%d.cfc_comp_curve_umethod", tx->id,           tx->cfc_comp_curve_umethod);
+  GetPropI1("transmitter.%d.cfc_post_curve_degree", tx->id,            tx->cfc_post_curve_degree);
+  GetPropI1("transmitter.%d.cfc_post_curve_r",      tx->id,            tx->cfc_post_curve_r);
+  GetPropI1("transmitter.%d.cfc_post_curve_umethod", tx->id,           tx->cfc_post_curve_umethod);
   GetPropI1("transmitter.%d.dexp",              tx->id,               tx->dexp);
   GetPropI1("transmitter.%d.dexp_exp",          tx->id,               tx->dexp_exp);
   GetPropI1("transmitter.%d.dexp_filter",       tx->id,               tx->dexp_filter);
@@ -514,13 +535,27 @@ static void tx_restore_state(TRANSMITTER *tx) {
   GetPropI1("transmitter.%d.display_filled",    tx->id,               tx->display_filled);
   GetPropI1("transmitter.%d.eq_enable",         tx->id,               tx->eq_enable);
   GetPropI1("transmitter.%d.eq_ctfmode",        tx->id,               tx->eq_ctfmode);
+  GetPropI1("transmitter.%d.eq_curve_degree",   tx->id,               tx->eq_curve_degree);
+  GetPropI1("transmitter.%d.eq_curve_r",        tx->id,               tx->eq_curve_r);
+  GetPropI1("transmitter.%d.eq_curve_umethod",  tx->id,               tx->eq_curve_umethod);
+  for (int i = 0; i < 12; i++) {
+    GetPropF2("transmitter.%d.eq_weight[%d]",   tx->id, i,            tx->eq_weight[i]);
+  }
   for (int i = 0; i < 13; i++) {
     GetPropF2("transmitter.%d.eq_freq[%d]",     tx->id, i,            tx->eq_freq[i]);
     GetPropF2("transmitter.%d.eq_gain[%d]",     tx->id, i,            tx->eq_gain[i]);
     GetPropF2("transmitter.%d.cfc_freq[%d]",    tx->id, i,            tx->cfc_freq[i]);
     GetPropF2("transmitter.%d.cfc_lvl[%d]",     tx->id, i,            tx->cfc_lvl[i]);
     GetPropF2("transmitter.%d.cfc_post[%d]",    tx->id, i,            tx->cfc_post[i]);
+    if (i < 12) {
+      GetPropF2("transmitter.%d.cfc_comp_weight[%d]", tx->id, i,        tx->cfc_comp_weight[i]);
+      GetPropF2("transmitter.%d.cfc_post_weight[%d]", tx->id, i,        tx->cfc_post_weight[i]);
+    }
   }
+  /* Preserve complete control-point tuples when restoring old or
+   * hand-edited profiles with unsorted frequencies. */
+  sort_tx_eq(tx);
+  sort_cfc(tx);
   GetPropI1("transmitter.%d.lev_attack",        tx->id,               tx->lev_attack);
   GetPropI1("transmitter.%d.lev_decay",         tx->id,               tx->lev_decay);
   GetPropF1("transmitter.%d.lev_gain",          tx->id,               tx->lev_gain);
@@ -542,8 +577,7 @@ static void tx_restore_state(TRANSMITTER *tx) {
 static double compute_power(double p) {
   double interval = 0.1 * pa_power_list[pa_power];
   int i = 0;
-  if (pa_enabled && (device == DEVICE_HERMES_LITE || device == DEVICE_HERMES_LITE2 ||
-                     device == NEW_DEVICE_HERMES_LITE || device == NEW_DEVICE_HERMES_LITE2) &&
+  if (pa_enabled && (device == DEVICE_HERMES_LITE || device == DEVICE_HERMES_LITE2) &&
       !have_radioberry1 && !have_radioberry2 && !have_radioberry3) {
     reassign_pa_trim();
   }
@@ -737,6 +771,18 @@ static gboolean tx_update_display(gpointer data) {
       rev_cal_offset = 2;
       fwd_cal_offset = 4;
       break;
+    case DEVICE_G2E:
+    case NEW_DEVICE_G2E:
+      //
+      // Measurements made by Larry P. with his G2E showed that 5.0 is
+      // the right value for constant1.
+      //
+      constant1 = 5.0;
+      constant2 = 0.12;
+      rconstant2 = is6m ? 0.7 : 0.15;
+      rev_cal_offset = 42;
+      fwd_cal_offset = 48;
+      break;
     case DEVICE_ORION2:  // Anan7000/8000/G2
     case NEW_DEVICE_ORION2:
     case NEW_DEVICE_SATURN:
@@ -758,8 +804,6 @@ static gboolean tx_update_display(gpointer data) {
       break;
     case DEVICE_HERMES_LITE:
     case DEVICE_HERMES_LITE2:
-    case NEW_DEVICE_HERMES_LITE:
-    case NEW_DEVICE_HERMES_LITE2:
       //
       // These values are a fit to the "HL2FilterE3" data in Quisk.
       // No difference in the Fwd and Rev formula.
@@ -775,8 +819,7 @@ static gboolean tx_update_display(gpointer data) {
     // Special hook for HL2s with an incorrectly wound current
     // sense transformer: Exchange fwd and rev readings
     //
-    if (device == DEVICE_HERMES_LITE || device == DEVICE_HERMES_LITE2 ||
-        device == NEW_DEVICE_HERMES_LITE || device == NEW_DEVICE_HERMES_LITE2) {
+    if (device == DEVICE_HERMES_LITE || device == DEVICE_HERMES_LITE2) {
       if (rev_power > fwd_power) {
         fwd_power   = alex_reverse_power;
         rev_power   = alex_forward_power;
@@ -1185,6 +1228,16 @@ TRANSMITTER *tx_create_transmitter(int id, int pixels, int width, int height) {
   tx->compressor_level = 4.0;
   tx->cfc              =       0;
   tx->cfc_eq           =       0;
+  tx->cfc_comp_curve_degree = 0;
+  tx->cfc_comp_curve_r = 0;
+  tx->cfc_comp_curve_umethod = 0;
+  tx->cfc_post_curve_degree = 0;
+  tx->cfc_post_curve_r = 0;
+  tx->cfc_post_curve_umethod = 0;
+  for (int i = 0; i < 12; i++) {
+    tx->cfc_comp_weight[i] = 1.0;
+    tx->cfc_post_weight[i] = 1.0;
+  }
   tx->cfc_freq[ 0]     =     0.0;  // Not used
   tx->cfc_freq[ 1]     =    50.0;
   tx->cfc_freq[ 2]     =   150.0;
@@ -1256,6 +1309,12 @@ TRANSMITTER *tx_create_transmitter(int id, int pixels, int width, int height) {
   tx->alc = 0.0;
   tx->eq_enable = 0;
   tx->eq_ctfmode = 0;
+  tx->eq_curve_degree = 0;
+  tx->eq_curve_r = 0;
+  tx->eq_curve_umethod = 0;
+  for (int i = 0; i < 12; i++) {
+    tx->eq_weight[i] = 1.0;
+  }
   tx->eq_freq[0]  =     0.0; // not used
   tx->eq_freq[1]  =    70.0;
   tx->eq_freq[2]  =   150.0;
@@ -1359,6 +1418,14 @@ TRANSMITTER *tx_create_transmitter(int id, int pixels, int width, int height) {
   //
   tx->mic_input_buffer = g_new(double, 2 * tx->buffer_size);
   tx->iq_output_buffer = g_new(double, 2 * tx->output_samples);
+  tx->monitor_input_i = g_new(float, tx->output_samples);
+  tx->monitor_input_q = g_new(float, tx->output_samples);
+  tx->monitor_output_i = g_new(float, tx->output_samples);
+  tx->monitor_output_q = g_new(float, tx->output_samples);
+  if (tx->iq_output_rate != 48000) {
+    tx->monitor_resampler_i = create_resampleFV(tx->iq_output_rate, 48000);
+    tx->monitor_resampler_q = create_resampleFV(tx->iq_output_rate, 48000);
+  }
   tx->cw_sig_rf = g_new(double, tx->output_samples);
   tx->samples = 0;
   tx->pixel_samples = g_new(float, tx->pixels);
@@ -1460,14 +1527,102 @@ TRANSMITTER *tx_create_transmitter(int id, int pixels, int width, int height) {
   return tx;
 }
 
-float fir_apply(float input) {
-  memmove(&fir_state[1], &fir_state[0], (FIR_TAPS - 1) * sizeof(float));
-  fir_state[0] = input;
-  float acc = 0.0f;
-  for (size_t i = 0; i < FIR_TAPS; i++) {
-    acc += fir_state[i] * fir_bandpass_300_2700[i];
+void tx_set_monitor(int state) {
+  atomic_store_explicit(&mon_enabled, state ? 1 : 0, memory_order_relaxed);
+}
+
+int tx_get_monitor(void) {
+  return atomic_load_explicit(&mon_enabled, memory_order_relaxed);
+}
+
+void tx_set_monitor_gain_db(double gain_db) {
+  atomic_store_explicit(&tx_monitor_gain, pow(10.0, 0.05 * gain_db), memory_order_relaxed);
+}
+
+double tx_get_monitor_gain_db(void) {
+  double monitor_gain = atomic_load_explicit(&tx_monitor_gain, memory_order_relaxed);
+  return 20.0 * log10(monitor_gain);
+}
+
+void tx_set_monitor_post(int state) {
+  atomic_store_explicit(&tx_monitor_post, state ? 1 : 0, memory_order_relaxed);
+}
+
+int tx_get_monitor_post(void) {
+  return atomic_load_explicit(&tx_monitor_post, memory_order_relaxed);
+}
+
+static int tx_monitor_allowed(TRANSMITTER *tx, int txmode) {
+  return atomic_load_explicit(&mon_enabled, memory_order_relaxed) &&
+         radio_is_transmitting() && !tune && !tx->twotone && !tx->noise &&
+         txmode != modeCWU && txmode != modeCWL && !CAT_rtty_is_active &&
+         !tci_audio_tx_enabled();
+}
+
+int tx_monitor_audio_active(void) {
+  if (transmitter == NULL) {
+    return 0;
   }
-  return acc;
+  int txmode = vfo_get_tx_mode();
+  if (!tx_monitor_allowed(transmitter, txmode)) {
+    return 0;
+  }
+  return 1;
+}
+
+static void tx_monitor_pre_input(TRANSMITTER *tx, int txmode) {
+  if (atomic_load_explicit(&tx_monitor_post, memory_order_relaxed) ||
+      !tx_monitor_allowed(tx, txmode)) {
+    return;
+  }
+  // Mic PreAmp is already present in mic_input_buffer for physical microphone
+  // sources. Mic Gain itself is the WDSP PanelGain, so apply the same gain to
+  // the monitor copy only. DIGL/DIGU and captured/voice-keyer TX deliberately
+  // use 0 dB PanelGain in the real TX path and must do so here too.
+  double monitor_gain = atomic_load_explicit(&tx_monitor_gain, memory_order_relaxed);
+  double panel_gain = (txmode == modeDIGL || txmode == modeDIGU ||
+                       capture_state == CAP_XMIT || capture_state == CAP_XMIT_DONE)
+                      ? 1.0
+                      : pow(10.0, tx->mic_gain * 0.05);
+  for (int i = 0; i < tx->samples; i++) {
+    double sample = monitor_gain * panel_gain * tx->mic_input_buffer[2 * i];
+    audio_write_monitor(active_receiver, sample, sample);
+  }
+}
+
+static void tx_monitor_processed_output(TRANSMITTER *tx, int txmode) {
+  if (!atomic_load_explicit(&tx_monitor_post, memory_order_relaxed) ||
+      !tx_monitor_allowed(tx, txmode)) {
+    return;
+  }
+  double monitor_gain = atomic_load_explicit(&tx_monitor_gain, memory_order_relaxed);
+  for (int i = 0; i < tx->output_samples; i++) {
+    tx->monitor_input_i[i] = (float)tx->iq_output_buffer[2 * i];
+    tx->monitor_input_q[i] = (float)tx->iq_output_buffer[2 * i + 1];
+  }
+  if (tx->iq_output_rate == 48000) {
+    for (int i = 0; i < tx->output_samples; i++) {
+      audio_write_monitor(active_receiver,
+                          monitor_gain * tx->monitor_input_i[i],
+                          monitor_gain * tx->monitor_input_q[i]);
+    }
+    return;
+  }
+  int out_i = 0;
+  int out_q = 0;
+  if (tx->monitor_resampler_i == NULL || tx->monitor_resampler_q == NULL) {
+    return;
+  }
+  xresampleFV(tx->monitor_input_i, tx->monitor_output_i, tx->output_samples,
+              &out_i, tx->monitor_resampler_i);
+  xresampleFV(tx->monitor_input_q, tx->monitor_output_q, tx->output_samples,
+              &out_q, tx->monitor_resampler_q);
+  int frames = min(out_i, out_q);
+  for (int i = 0; i < frames; i++) {
+    audio_write_monitor(active_receiver,
+                        monitor_gain * tx->monitor_output_i[i],
+                        monitor_gain * tx->monitor_output_q[i]);
+  }
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -1574,39 +1729,12 @@ static void tx_full_buffer(TRANSMITTER *tx) {
       memset(tx->mic_input_buffer, 0,
              (size_t) 2 * tx->buffer_size * sizeof *tx->mic_input_buffer);
     }
+    tx_monitor_pre_input(tx, txmode);
     fexchange0(tx->id, tx->mic_input_buffer, tx->iq_output_buffer, &error);
-    if (mon_enabled && radio_is_transmitting() &&
-        vfo_get_tx_mode() != modeCWU &&
-        vfo_get_tx_mode() != modeCWL) {
-      float gain = 1.0f;  // Optional: -6 dB
-      for (int i = 0; i < tx->samples; i++) {
-        float left  = tx->mic_input_buffer[2 * i];
-        float right = tx->mic_input_buffer[2 * i + 1];
-        float mono  = 0.5f * (left + right);
-        float filtered = fir_apply(gain * mono);
-        audio_write(receiver[0], filtered, filtered);  // Stereo out
-      }
-    }
-    /*
-    // test from Siphon of the WDSP
-    if (radio_is_transmitting() &&
-        vfo_get_tx_mode() != modeCWU &&
-        vfo_get_tx_mode() != modeCWL) {
-
-      float gain = 0.3f;  // z. B. -6 dB
-      float siphon_buffer[tx->samples];
-
-      TXAGetaSipF(tx->id, siphon_buffer, tx->samples);  // Siphon auslesen
-
-      for (int i = 0; i < tx->samples; i++) {
-        float sample = siphon_buffer[i];
-        // audio_write(receiver[0], gain * sample, gain * sample);  // Mono auf beide Kanäle
-        printf("Siphon sample[%d] = %f\n", i, sample);  // testweise loggen
-      }
-    }
-    */
     if (error != 0) {
       t_print("tx_full_buffer: id=%d fexchange0: error=%d\n", tx->id, error);
+    } else {
+      tx_monitor_processed_output(tx, txmode);
     }
   }
   if (tx->displaying && !(tx->puresignal && tx->feedback) && !CAT_rtty_is_active) {
@@ -2145,6 +2273,16 @@ void tx_set_framerate(TRANSMITTER *tx) {
 ////////////////////////////////////////////////////////
 
 void tx_close(const TRANSMITTER *tx) {
+  if (tx->monitor_resampler_i != NULL) {
+    destroy_resampleFV(tx->monitor_resampler_i);
+  }
+  if (tx->monitor_resampler_q != NULL) {
+    destroy_resampleFV(tx->monitor_resampler_q);
+  }
+  g_free(tx->monitor_input_i);
+  g_free(tx->monitor_input_q);
+  g_free(tx->monitor_output_i);
+  g_free(tx->monitor_output_q);
   CloseChannel(tx->id);
 }
 
@@ -2617,6 +2755,12 @@ void tx_set_compressor(TRANSMITTER *tx) {
   t_print("%s: PH-ROT state %d, stages %d, freq %.1fHz\n",
           __func__, tx->phrot_enable, tx->phrot_stage, tx->phrot_freq);
   SetTXACFCOMPprofile(tx->id, 12, tx->cfc_freq + 1, tx->cfc_lvl + 1, tx->cfc_post + 1);
+#ifndef WDSP1
+  SetTXACFCOMPCompCurve(tx->id, tx->cfc_comp_curve_degree, tx->cfc_comp_curve_r, tx->cfc_comp_curve_umethod);
+  SetTXACFCOMPCompWeights(tx->id, 12, tx->cfc_comp_weight);
+  SetTXACFCOMPPeqCurve(tx->id, tx->cfc_post_curve_degree, tx->cfc_post_curve_r, tx->cfc_post_curve_umethod);
+  SetTXACFCOMPPeqWeights(tx->id, 12, tx->cfc_post_weight);
+#endif
   SetTXACFCOMPPrecomp(tx->id, tx->cfc_lvl[0]);
   SetTXACFCOMPRun(tx->id, tx->cfc);  // Pre CFC on/off
   SetTXACFCOMPPrePeq(tx->id, tx->cfc_post[0]);
@@ -2775,6 +2919,10 @@ void tx_xmit_captured_data_end(const TRANSMITTER *tx) {
 
 void tx_set_equalizer(TRANSMITTER *tx) {
   SetTXAEQProfile(tx->id, 12, tx->eq_freq, tx->eq_gain);
+#ifndef WDSP1
+  SetTXAEQCurve(tx->id, tx->eq_curve_degree, tx->eq_curve_r, tx->eq_curve_umethod);
+  SetTXAEQWeights(tx->id, 12, tx->eq_weight);
+#endif
   SetTXAEQRun(tx->id, tx->eq_enable);
   t_print("%s: TX-EQ state: %d, Gain: %.1fdb\n", __func__, tx->eq_enable, tx->eq_gain[0]);
 }

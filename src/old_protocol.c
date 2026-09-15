@@ -1357,6 +1357,7 @@ static int rx_feedback_channel(void) {
     // Note Anan-10E and Anan-100B behave like METIS
     ret = anan10E ? 0 : 2;
     break;
+  case DEVICE_G2E:
   case DEVICE_STEMLAB:
   case DEVICE_STEMLAB_Z20:
   case DEVICE_HERMES_LITE2:
@@ -1393,6 +1394,7 @@ static int tx_feedback_channel(void) {
     // Note Anan-10E and Anan-100B behave like METIS
     ret = anan10E ? 1 : 3;
     break;
+  case DEVICE_G2E:
   case DEVICE_STEMLAB:
   case DEVICE_STEMLAB_Z20:
   case DEVICE_HERMES_LITE2:
@@ -1533,6 +1535,7 @@ static int how_many_receivers(void) {
       // Note Anan-10E and Anan-100B behave like METIS
       ret = anan10E ? 2 : 4;
       break;
+    case DEVICE_G2E:
     case DEVICE_STEMLAB:
     case DEVICE_STEMLAB_Z20:
     case DEVICE_HERMES_LITE2:
@@ -2420,7 +2423,12 @@ void ozy_send_buffer(void) {
     // Some  HL2 firmware variants (ab-) uses this bit for indicating an audio codec is present
     // We also  accept explicit use  of the "dither" box
     //
-    if (device == DEVICE_HERMES_LITE2 && hl2_audio_codec) {
+    // NOTE: on the SQUARE SDR 2 (HL2_CODEC_SQUARESDR2) the very same bit is used
+    //       by the gateware to switch the internal loudspeaker ON/OFF. There the
+    //       bit must NOT be forced, it has to stay under control of the
+    //       "Dither Bit (HL2 Band Volts)" checkbox in the RX menu.
+    //
+    if (device == DEVICE_HERMES_LITE2 && hl2_audio_codec == HL2_CODEC_AK4951) {
       output_buffer[C3] |= LT2208_DITHER_ON;
     }
     if (filter_board == CHARLY25 && receiver[0]->preamp) {
@@ -2437,7 +2445,7 @@ void ozy_send_buffer(void) {
     // If feedback is to the second ADC, leave RX1 ANT settings untouched
     //
     if (radio_is_transmitting() && transmitter->puresignal) { i = receiver[PS_RX_FEEDBACK]->alex_antenna; }
-    if (device == DEVICE_ORION2) {
+    if (device == DEVICE_ORION2 || device == DEVICE_G2E) {
       i += 100;
     } else if (new_pa_board) {
       // New-PA setting invalid on ANAN-7000,8000

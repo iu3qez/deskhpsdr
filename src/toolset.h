@@ -50,11 +50,15 @@ extern char *truncate_text_3p(const char *text, size_t max_length);
 extern gboolean check_and_run_idle_cb(gpointer data);
 extern void to_uppercase(char *str);
 extern void remove_char(char *str, char remove);
+extern void replace_char(char *str, char find, char replace);
 extern void sanitize_filename(char *str);
 extern int file_present(const char *filename);
 extern const char *extract_short_msg(const char *msg);
+extern void sort_cfc_profile(double *freq, double *level, double *post, double *comp_weight, double *post_weight);
 extern void sort_cfc(TRANSMITTER *tx);
+extern void sort_eq_profile(double *freq, double *gain, double *weight);
 extern void sort_tx_eq(TRANSMITTER *tx);
+extern void sort_rx_eq(RECEIVER *rx);
 #ifdef __APPLE__
   extern int get_macos_major_version(void);
 #endif

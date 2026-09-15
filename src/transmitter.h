@@ -45,6 +45,14 @@ typedef struct _transmitter {
   double *mic_input_buffer;
   double *iq_output_buffer;
 
+  // Processed TX monitor (WDSP TX output -> local 48 kHz audio)
+  void *monitor_resampler_i;
+  void *monitor_resampler_q;
+  float *monitor_input_i;
+  float *monitor_input_q;
+  float *monitor_output_i;
+  float *monitor_output_q;
+
   float *pixel_samples;
   int display_panadapter;
   int display_waterfall;
@@ -147,6 +155,14 @@ typedef struct _transmitter {
   double cfc_freq[13];      // CFC corner frequencies
   double cfc_lvl[13];       // compression level for corner frequencies
   double cfc_post[13];      // EQ gain for corner frequencies
+  int cfc_comp_curve_degree;
+  int cfc_comp_curve_r;
+  int cfc_comp_curve_umethod;
+  double cfc_comp_weight[12];
+  int cfc_post_curve_degree;
+  int cfc_post_curve_r;
+  int cfc_post_curve_umethod;
+  double cfc_post_weight[12];
 
   int dexp;                 // use downward expander (DEXP)
   int    dexp_trigger;      // threshold for the "noise gate" in dB (!)
@@ -205,6 +221,10 @@ typedef struct _transmitter {
   double eq_freq[13];  // frequency in Hz
   double eq_gain[13];  // gain in dB
   int eq_ctfmode;
+  int eq_curve_degree;
+  int eq_curve_r;
+  int eq_curve_umethod;
+  double eq_weight[12];
 
   // --- Zusatzfenster: TX Levelanzeigen ---
   GtkWidget *levels_dialog;
@@ -279,6 +299,13 @@ extern void   tx_set_fft_size(const TRANSMITTER *tx);
 extern void   tx_set_filter(TRANSMITTER *tx);
 extern void   tx_set_framerate(TRANSMITTER *tx);
 extern void   tx_set_mic_gain(const TRANSMITTER *tx);
+extern void   tx_set_monitor(int state);
+extern int    tx_get_monitor(void);
+extern int    tx_monitor_audio_active(void);
+extern void   tx_set_monitor_gain_db(double gain_db);
+extern double tx_get_monitor_gain_db(void);
+extern void   tx_set_monitor_post(int state);
+extern int    tx_get_monitor_post(void);
 extern void   tx_set_mode(TRANSMITTER* tx, int m);
 extern void   tx_set_out_of_band(TRANSMITTER *tx);
 extern void   tx_set_pre_emphasize(const TRANSMITTER *tx);

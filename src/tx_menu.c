@@ -37,33 +37,40 @@
 #include "message.h"
 #include "property.h"
 #include "equalizer_menu.h"
+#include "cfc_graph.h"
 #include "toolset.h"
 #include "startup.h"
 #include "tci.h"
 
 static GtkWidget *dialog = NULL;
 static GtkWidget *input;
+static GtkWidget *headerbar = NULL;
 static GtkWidget *tx_spin_low;
 static GtkWidget *tx_spin_high;
 static GtkWidget *tx_tune_drive_spin;
 static gulong tx_tune_drive_spin_signal_id;
 
 static GtkWidget *tx_container;
+static GtkWidget *proaudio_container;
 static GtkWidget *cfc_container;
-static GtkWidget *dexp_container;
 static GtkWidget *peaks_container;
 
 static GtkWidget *load_button;
 static GtkWidget *audio_profile;
 static GtkWidget *save_button;
+
+static GtkWidget *sdr_mic_btn = NULL;
+static GtkWidget *sdr_linein_btn = NULL;
+static GtkWidget *loc_mic_btn = NULL;
+static gulong loc_mic_btn_signal_id;
 //
 // Some symbolic constants used in callbacks
 //
 
 enum _containers {
   TX_CONTAINER = 1,
+  PROAUDIO_CONTAINER,
   CFC_CONTAINER,
-  DEXP_CONTAINER,
   PEAKS_CONTAINER
 };
 static int which_container = TX_CONTAINER;
@@ -179,6 +186,12 @@ void audioSaveProfile(const char *filename) {
   int i = modeLSB;
   SetPropS0("PGNAME",                              PGNAME);
   SetPropI1("modeset.%d.en_txeq", i,               mode_settings[i].en_txeq);
+  SetPropI1("modeset.%d.rxeq_curve_degree", i,      mode_settings[i].rx_eq_curve_degree);
+  SetPropI1("modeset.%d.rxeq_curve_r", i,           mode_settings[i].rx_eq_curve_r);
+  SetPropI1("modeset.%d.rxeq_curve_umethod", i,     mode_settings[i].rx_eq_curve_umethod);
+  SetPropI1("modeset.%d.txeq_curve_degree", i,      mode_settings[i].tx_eq_curve_degree);
+  SetPropI1("modeset.%d.txeq_curve_r", i,           mode_settings[i].tx_eq_curve_r);
+  SetPropI1("modeset.%d.txeq_curve_umethod", i,     mode_settings[i].tx_eq_curve_umethod);
   SetPropI1("modeset.%d.en_rxeq", i,               mode_settings[i].en_rxeq);
   SetPropI1("modeset.%d.compressor", i,            mode_settings[i].compressor);
   SetPropF1("modeset.%d.compressor_level", i,      mode_settings[i].compressor_level);
@@ -187,14 +200,30 @@ void audioSaveProfile(const char *filename) {
   SetPropI1("modeset.%d.phrot_enable", i,          mode_settings[i].phrot_enable);
   SetPropI1("modeset.%d.cfc", i,                   mode_settings[i].cfc);
   SetPropI1("modeset.%d.cfc_eq", i,                mode_settings[i].cfc_eq);
+  SetPropI1("modeset.%d.cfc_comp_curve_degree", i, mode_settings[i].cfc_comp_curve_degree);
+  SetPropI1("modeset.%d.cfc_comp_curve_r", i,      mode_settings[i].cfc_comp_curve_r);
+  SetPropI1("modeset.%d.cfc_comp_curve_umethod", i, mode_settings[i].cfc_comp_curve_umethod);
+  SetPropI1("modeset.%d.cfc_post_curve_degree", i, mode_settings[i].cfc_post_curve_degree);
+  SetPropI1("modeset.%d.cfc_post_curve_r", i,      mode_settings[i].cfc_post_curve_r);
+  SetPropI1("modeset.%d.cfc_post_curve_umethod", i, mode_settings[i].cfc_post_curve_umethod);
   for (int j = 0; j < 13; j++) {
     SetPropF2("modeset.%d.txeq.%d", i, j,          mode_settings[i].tx_eq_gain[j]);
     SetPropF2("modeset.%d.txeqfrq.%d", i, j,       mode_settings[i].tx_eq_freq[j]);
+    if (j < 12) {
+      SetPropF2("modeset.%d.txeq_weight.%d", i, j,    mode_settings[i].tx_eq_weight[j]);
+    }
     SetPropF2("modeset.%d.rxeq.%d", i, j,          mode_settings[i].rx_eq_gain[j]);
     SetPropF2("modeset.%d.rxeqfrq.%d", i, j,       mode_settings[i].rx_eq_freq[j]);
+    if (j < 12) {
+      SetPropF2("modeset.%d.rxeq_weight.%d", i, j,  mode_settings[i].rx_eq_weight[j]);
+    }
     SetPropF2("modeset.%d.cfc_frq.%d", i, j,       mode_settings[i].cfc_freq[j]);
     SetPropF2("modeset.%d.cfc_lvl.%d", i, j,       mode_settings[i].cfc_lvl[j]);
     SetPropF2("modeset.%d.cfc_post.%d", i, j,      mode_settings[i].cfc_post[j]);
+    if (j < 12) {
+      SetPropF2("modeset.%d.cfc_comp_weight.%d", i, j, mode_settings[i].cfc_comp_weight[j]);
+      SetPropF2("modeset.%d.cfc_post_weight.%d", i, j, mode_settings[i].cfc_post_weight[j]);
+    }
   }
   SetPropI0("transmitter.addgain_enable",          transmitter->addgain_enable);
   SetPropF0("transmitter.addgain_gain",            transmitter->addgain_gain);
@@ -206,13 +235,36 @@ void audioSaveProfile(const char *filename) {
 
 static void audioLoadProfile(const char *filename) {
   int i = modeLSB;
-  char pg_name[16];
+  char pg_name[16] = {0};
   // snprintf(DateiName, 64, "audio_profile_%d.prop", mic_prof.nr);
   if (!filename || access(filename, F_OK) != 0) {
     return;
   }
   t_print("%s: file=%s mode=%d\n", __func__, filename, i);
   loadProperties(filename);
+  /* Backward compatibility for profiles saved before TX EQ curve support. */
+  mode_settings[i].rx_eq_curve_degree = 0;
+  mode_settings[i].rx_eq_curve_r = 0;
+  mode_settings[i].rx_eq_curve_umethod = 0;
+  for (int j = 0; j < 12; j++) {
+    mode_settings[i].rx_eq_weight[j] = 1.0;
+  }
+  mode_settings[i].tx_eq_curve_degree = 0;
+  mode_settings[i].tx_eq_curve_r = 0;
+  mode_settings[i].tx_eq_curve_umethod = 0;
+  for (int j = 0; j < 12; j++) {
+    mode_settings[i].tx_eq_weight[j] = 1.0;
+  }
+  mode_settings[i].cfc_comp_curve_degree = 0;
+  mode_settings[i].cfc_comp_curve_r = 0;
+  mode_settings[i].cfc_comp_curve_umethod = 0;
+  mode_settings[i].cfc_post_curve_degree = 0;
+  mode_settings[i].cfc_post_curve_r = 0;
+  mode_settings[i].cfc_post_curve_umethod = 0;
+  for (int j = 0; j < 12; j++) {
+    mode_settings[i].cfc_comp_weight[j] = 1.0;
+    mode_settings[i].cfc_post_weight[j] = 1.0;
+  }
   GetPropS0("PGNAME",                              pg_name);
   if (strcmp(pg_name, PGNAME) != 0) {
     t_print("%s: Load file %s failed, not deskHPSDR format\n", __func__, filename);
@@ -220,6 +272,12 @@ static void audioLoadProfile(const char *filename) {
     return;
   }
   GetPropI1("modeset.%d.en_txeq", i,               mode_settings[i].en_txeq);
+  GetPropI1("modeset.%d.rxeq_curve_degree", i,      mode_settings[i].rx_eq_curve_degree);
+  GetPropI1("modeset.%d.rxeq_curve_r", i,           mode_settings[i].rx_eq_curve_r);
+  GetPropI1("modeset.%d.rxeq_curve_umethod", i,     mode_settings[i].rx_eq_curve_umethod);
+  GetPropI1("modeset.%d.txeq_curve_degree", i,      mode_settings[i].tx_eq_curve_degree);
+  GetPropI1("modeset.%d.txeq_curve_r", i,           mode_settings[i].tx_eq_curve_r);
+  GetPropI1("modeset.%d.txeq_curve_umethod", i,     mode_settings[i].tx_eq_curve_umethod);
   GetPropI1("modeset.%d.en_rxeq", i,               mode_settings[i].en_rxeq);
   GetPropI1("modeset.%d.compressor", i,            mode_settings[i].compressor);
   GetPropF1("modeset.%d.compressor_level", i,      mode_settings[i].compressor_level);
@@ -228,18 +286,44 @@ static void audioLoadProfile(const char *filename) {
   GetPropI1("modeset.%d.phrot_enable", i,          mode_settings[i].phrot_enable);
   GetPropI1("modeset.%d.cfc", i,                   mode_settings[i].cfc);
   GetPropI1("modeset.%d.cfc_eq", i,                mode_settings[i].cfc_eq);
+  GetPropI1("modeset.%d.cfc_comp_curve_degree", i, mode_settings[i].cfc_comp_curve_degree);
+  GetPropI1("modeset.%d.cfc_comp_curve_r", i,      mode_settings[i].cfc_comp_curve_r);
+  GetPropI1("modeset.%d.cfc_comp_curve_umethod", i, mode_settings[i].cfc_comp_curve_umethod);
+  GetPropI1("modeset.%d.cfc_post_curve_degree", i, mode_settings[i].cfc_post_curve_degree);
+  GetPropI1("modeset.%d.cfc_post_curve_r", i,      mode_settings[i].cfc_post_curve_r);
+  GetPropI1("modeset.%d.cfc_post_curve_umethod", i, mode_settings[i].cfc_post_curve_umethod);
   for (int j = 0; j < 13; j++) {
     GetPropF2("modeset.%d.txeq.%d", i, j,          mode_settings[i].tx_eq_gain[j]);
     GetPropF2("modeset.%d.txeqfrq.%d", i, j,       mode_settings[i].tx_eq_freq[j]);
+    if (j < 12) {
+      GetPropF2("modeset.%d.txeq_weight.%d", i, j,    mode_settings[i].tx_eq_weight[j]);
+    }
     GetPropF2("modeset.%d.rxeq.%d", i, j,          mode_settings[i].rx_eq_gain[j]);
     GetPropF2("modeset.%d.rxeqfrq.%d", i, j,       mode_settings[i].rx_eq_freq[j]);
+    if (j < 12) {
+      GetPropF2("modeset.%d.rxeq_weight.%d", i, j,  mode_settings[i].rx_eq_weight[j]);
+    }
     GetPropF2("modeset.%d.cfc_frq.%d", i, j,       mode_settings[i].cfc_freq[j]);
     GetPropF2("modeset.%d.cfc_lvl.%d", i, j,       mode_settings[i].cfc_lvl[j]);
     GetPropF2("modeset.%d.cfc_post.%d", i, j,      mode_settings[i].cfc_post[j]);
+    if (j < 12) {
+      GetPropF2("modeset.%d.cfc_comp_weight.%d", i, j, mode_settings[i].cfc_comp_weight[j]);
+      GetPropF2("modeset.%d.cfc_post_weight.%d", i, j, mode_settings[i].cfc_post_weight[j]);
+    }
   }
+  sort_eq_profile(mode_settings[i].tx_eq_freq, mode_settings[i].tx_eq_gain, mode_settings[i].tx_eq_weight);
+  sort_eq_profile(mode_settings[i].rx_eq_freq, mode_settings[i].rx_eq_gain, mode_settings[i].rx_eq_weight);
+  sort_cfc_profile(mode_settings[i].cfc_freq, mode_settings[i].cfc_lvl, mode_settings[i].cfc_post,
+                   mode_settings[i].cfc_comp_weight, mode_settings[i].cfc_post_weight);
   GetPropI0("transmitter.addgain_enable",          transmitter->addgain_enable);
   GetPropF0("transmitter.addgain_gain",            transmitter->addgain_gain);
   transmitter->eq_enable        = mode_settings[i].en_txeq;
+  transmitter->eq_curve_degree = mode_settings[i].tx_eq_curve_degree;
+  transmitter->eq_curve_r = mode_settings[i].tx_eq_curve_r;
+  transmitter->eq_curve_umethod = mode_settings[i].tx_eq_curve_umethod;
+  for (int j = 0; j < 12; j++) {
+    transmitter->eq_weight[j] = mode_settings[i].tx_eq_weight[j];
+  }
   transmitter->compressor       = mode_settings[i].compressor;
   transmitter->compressor_level = mode_settings[i].compressor_level;
   transmitter->lev_enable       = mode_settings[i].lev_enable;
@@ -247,12 +331,40 @@ static void audioLoadProfile(const char *filename) {
   transmitter->phrot_enable     = mode_settings[i].phrot_enable;
   transmitter->cfc              = mode_settings[i].cfc;
   transmitter->cfc_eq           = mode_settings[i].cfc_eq;
+  transmitter->cfc_comp_curve_degree = mode_settings[i].cfc_comp_curve_degree;
+  transmitter->cfc_comp_curve_r = mode_settings[i].cfc_comp_curve_r;
+  transmitter->cfc_comp_curve_umethod = mode_settings[i].cfc_comp_curve_umethod;
+  transmitter->cfc_post_curve_degree = mode_settings[i].cfc_post_curve_degree;
+  transmitter->cfc_post_curve_r = mode_settings[i].cfc_post_curve_r;
+  transmitter->cfc_post_curve_umethod = mode_settings[i].cfc_post_curve_umethod;
+  for (int j = 0; j < 12; j++) {
+    transmitter->cfc_comp_weight[j] = mode_settings[i].cfc_comp_weight[j];
+    transmitter->cfc_post_weight[j] = mode_settings[i].cfc_post_weight[j];
+  }
   for (int j = 0; j < 13; j++) {
     transmitter->eq_gain[j]     = mode_settings[i].tx_eq_gain[j];
     transmitter->eq_freq[j]     = mode_settings[i].tx_eq_freq[j];
     transmitter->cfc_freq[j]    = mode_settings[i].cfc_freq[j];
     transmitter->cfc_lvl[j]     = mode_settings[i].cfc_lvl[j];
     transmitter->cfc_post[j]    = mode_settings[i].cfc_post[j];
+  }
+  /* Restore the single RX EQ profile identically to all configured receivers. */
+  for (int r = 0; r < RECEIVERS; r++) {
+    if (receiver[r] == NULL) {
+      continue;
+    }
+    receiver[r]->eq_enable = mode_settings[i].en_rxeq;
+    receiver[r]->eq_curve_degree = mode_settings[i].rx_eq_curve_degree;
+    receiver[r]->eq_curve_r = mode_settings[i].rx_eq_curve_r;
+    receiver[r]->eq_curve_umethod = mode_settings[i].rx_eq_curve_umethod;
+    for (int j = 0; j < 13; j++) {
+      receiver[r]->eq_gain[j] = mode_settings[i].rx_eq_gain[j];
+      receiver[r]->eq_freq[j] = mode_settings[i].rx_eq_freq[j];
+      if (j < 12) {
+        receiver[r]->eq_weight[j] = mode_settings[i].rx_eq_weight[j];
+      }
+    }
+    sort_rx_eq(receiver[r]);
   }
   GetPropI0("transmitter.tx_filter_high",          tx_filter_high);
   GetPropI0("transmitter.tx_filter_low",           tx_filter_low);
@@ -472,6 +584,27 @@ static void save_button_clicked_cb(GtkWidget *widget, gpointer data) {
   }
 }
 
+void update_sdr_mic_btn(void) {
+  if (!transmitter || !sdr_mic_btn || !sdr_linein_btn) { return; }
+  if (transmitter && transmitter->local_microphone) {
+    gtk_widget_set_sensitive(sdr_mic_btn, FALSE);
+    gtk_widget_set_sensitive(sdr_linein_btn, FALSE);
+  } else if (transmitter && !transmitter->local_microphone) {
+    gtk_widget_set_sensitive(sdr_mic_btn, TRUE);
+    gtk_widget_set_sensitive(sdr_linein_btn, TRUE);
+  } else {
+    return;
+  }
+}
+
+void update_local_mic_btn(void) {
+  if (!transmitter || !loc_mic_btn) { return; }
+  g_signal_handler_block(GTK_TOGGLE_BUTTON(loc_mic_btn), loc_mic_btn_signal_id);
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(loc_mic_btn), transmitter->local_microphone);
+  g_signal_handler_unblock(GTK_TOGGLE_BUTTON(loc_mic_btn), loc_mic_btn_signal_id);
+  gtk_widget_queue_draw(loc_mic_btn);
+}
+
 static void audioprofile_changed_cb(GtkWidget *widget, gpointer data) {
   GtkWidget *load_button = GTK_WIDGET(data);
   int i = gtk_combo_box_get_active(GTK_COMBO_BOX(widget));    // Rückgabe als Index
@@ -655,11 +788,11 @@ static void sel_cb(GtkWidget *widget, gpointer data) {
   case TX_CONTAINER:
     my_container = tx_container;
     break;
+  case PROAUDIO_CONTAINER:
+    my_container = proaudio_container;
+    break;
   case CFC_CONTAINER:
     my_container = cfc_container;
-    break;
-  case DEXP_CONTAINER:
-    my_container = dexp_container;
     break;
   case PEAKS_CONTAINER:
     my_container = peaks_container;
@@ -790,23 +923,38 @@ static void spinbtn_cb(GtkWidget *widget, gpointer data) {
       break;
     }
   } else if (d == CFCFREQ) {
-    // The CFC frequency spin buttons
+    // The CFC frequency spin buttons. Keep control points ordered so the
+    // NURBS weights remain attached to the same frequency point.
+    if (e >= 1 && e <= 12) {
+      double lo = (e > 1) ? transmitter->cfc_freq[e - 1] + 10.0 : 10.0;
+      double hi = (e < 12) ? transmitter->cfc_freq[e + 1] - 10.0 : 16000.0;
+      double clamped = v;
+      if (clamped < lo) { clamped = lo; }
+      if (clamped > hi) { clamped = hi; }
+      if (clamped != v) {
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(widget), clamped);
+        return;
+      }
+    }
     transmitter->cfc_freq[e] = v;
     mode_settings[mode].cfc_freq[e] = v;
     copy_mode_settings(mode);
     tx_set_compressor(transmitter);
+    cfc_graph_refresh();
   } else if (d == CFCLVL) {
     // The CFC compression-level spin buttons
     transmitter->cfc_lvl[e] = v;
     mode_settings[mode].cfc_lvl[e] = v;
     copy_mode_settings(mode);
     tx_set_compressor(transmitter);
+    cfc_graph_refresh();
   } else if (d == CFCPOST) {
     // The CFC Post-equalizer gain spin buttons
     transmitter->cfc_post[e] = v;
     mode_settings[mode].cfc_post[e] = v;
     copy_mode_settings(mode);
     tx_set_compressor(transmitter);
+    cfc_graph_refresh();
   } else if (d == DEXP) {
     // The DEXP spin buttons. Note that the spin buttons for the
     // "time" values are in milli-seconds
@@ -962,6 +1110,17 @@ static void chkbtn_cb(GtkWidget *widget, gpointer data) {
         }
       }
       update_slider_local_mic_button();
+      update_sdr_mic_btn();
+      char m_name[128];
+      if (transmitter && transmitter->local_microphone) {
+        snprintf(m_name, sizeof(m_name), "%s - TX Menu (Mic Profile:%s)", PGNAME, truncate_text_3p(transmitter->microphone_name,
+            36));
+      } else if (transmitter && !transmitter->local_microphone) {
+        snprintf(m_name, sizeof(m_name), "%s - TX Menu (Mic Profile: SDR Device Mic)", PGNAME);
+      } else {
+        snprintf(m_name, sizeof(m_name), "%s - TX Menu", PGNAME);
+      }
+      gtk_header_bar_set_title(GTK_HEADER_BAR(headerbar), m_name);
       break;
     case TX_FM_EMP:
       transmitter->pre_emphasize = !v;
@@ -1026,6 +1185,13 @@ static void mic_in_cb(GtkWidget *widget, gpointer data) {
   schedule_transmit_specific();
 }
 
+static void monitor_tap_cb(GtkWidget *widget, gpointer data) {
+  (void) data;
+  int post = !tx_get_monitor_post();
+  tx_set_monitor_post(post);
+  gtk_button_set_label(GTK_BUTTON(widget), post ? "POST TX MONITOR" : "PRE TX MONITOR");
+}
+
 static void ctcss_frequency_cb(GtkWidget *widget, gpointer data) {
   transmitter->ctcss = gtk_combo_box_get_active(GTK_COMBO_BOX(widget));
   tx_set_ctcss(transmitter);
@@ -1050,15 +1216,31 @@ void local_input_changed_cb(GtkWidget *widget, gpointer data) {
   g_mutex_lock(&copy_string_mutex);
   g_strlcpy(transmitter->microphone_name, input_devices[i].name, sizeof(transmitter->microphone_name));
   g_mutex_unlock(&copy_string_mutex);
-  if (was_local_microphone && audio_open_input() == 0) {
+  // Keep an already active local mic alive across device changes.
+  // When the device is selected in the TX menu (flag == TRUE), selecting
+  // a device also enables Local Audio if it was previously disabled.
+  if ((was_local_microphone || flag) && audio_open_input() == 0) {
     transmitter->local_microphone = 1;
   }
+  // Synchronize all UI representations with the final state.
+  update_local_mic_btn();
   if (n_input_devices > 0) {
     if (flag) {
       update_slider_local_mic_input(i);
     }
     update_slider_local_mic_button();
+    update_sdr_mic_btn();
   }
+  char m_name[128];
+  if (transmitter && transmitter->local_microphone) {
+    snprintf(m_name, sizeof(m_name), "%s - TX Menu (Mic Profile:%s)", PGNAME, truncate_text_3p(transmitter->microphone_name,
+        36));
+  } else if (transmitter && !transmitter->local_microphone) {
+    snprintf(m_name, sizeof(m_name), "%s - TX Menu (Mic Profile: SDR Device Mic)", PGNAME);
+  } else {
+    snprintf(m_name, sizeof(m_name), "%s - TX Menu", PGNAME);
+  }
+  gtk_header_bar_set_title(GTK_HEADER_BAR(headerbar), m_name);
 }
 
 static void tune_drive_step_changed_cb(GtkComboBox *widget, gpointer data) {
@@ -1088,20 +1270,28 @@ void tx_menu(GtkWidget *parent) {
   GtkWidget *combo;
   dialog = gtk_dialog_new();
   gtk_window_set_transient_for(GTK_WINDOW(dialog), GTK_WINDOW(parent));
+  gtk_window_set_default_size(GTK_WINDOW(dialog), 580, 600); // set window size (can expand)
   gtk_window_set_position(GTK_WINDOW(dialog), GTK_WIN_POS_CENTER_ON_PARENT);
   win_set_bgcolor(dialog, &mwin_bgcolor);
-  GtkWidget *headerbar = gtk_header_bar_new();
+  headerbar = gtk_header_bar_new();
   gtk_window_set_titlebar(GTK_WINDOW(dialog), headerbar);
   gtk_header_bar_set_show_close_button(GTK_HEADER_BAR(headerbar), TRUE);
-  char _title[64];
-  snprintf(_title, 64, "%s TX Menu (Mic profile:%d)", PGNAME, mic_prof.nr);
-  gtk_header_bar_set_title(GTK_HEADER_BAR(headerbar), _title);
+  char m_name[128];
+  if (transmitter && transmitter->local_microphone) {
+    snprintf(m_name, sizeof(m_name), "%s - TX Menu (Mic Profile:%s)", PGNAME, truncate_text_3p(transmitter->microphone_name,
+        36));
+  } else if (transmitter && !transmitter->local_microphone) {
+    snprintf(m_name, sizeof(m_name), "%s - TX Menu (Mic Profile: SDR Device Mic)", PGNAME);
+  } else {
+    snprintf(m_name, sizeof(m_name), "%s - TX Menu", PGNAME);
+  }
+  gtk_header_bar_set_title(GTK_HEADER_BAR(headerbar), m_name);
   g_signal_connect(dialog, "delete_event", G_CALLBACK(close_cb), NULL);
   g_signal_connect(dialog, "destroy", G_CALLBACK(close_cb), NULL);
   GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
   GtkWidget *grid = gtk_grid_new();
-  gtk_grid_set_column_spacing(GTK_GRID(grid), 0);
-  gtk_grid_set_column_homogeneous(GTK_GRID(grid), TRUE);
+  gtk_grid_set_column_spacing(GTK_GRID(grid), 5);
+  gtk_grid_set_column_homogeneous(GTK_GRID(grid), FALSE);
   gtk_grid_set_row_spacing(GTK_GRID(grid), 5);
   gtk_container_add(GTK_CONTAINER(content), grid);
   int row = 0;
@@ -1115,8 +1305,10 @@ void tx_menu(GtkWidget *parent) {
   // a signal leading to show/hide commands
   //
   tx_container = gtk_fixed_new();
-  cfc_container = gtk_fixed_new();
-  dexp_container = gtk_fixed_new();
+  proaudio_container = gtk_fixed_new();
+  cfc_container = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  gtk_widget_set_hexpand(cfc_container, TRUE);
+  gtk_widget_set_halign(cfc_container, GTK_ALIGN_FILL);
   peaks_container = gtk_fixed_new();
   col++;
   mbtn = gtk_radio_button_new_with_label_from_widget(NULL, "TX Basic Settings");
@@ -1126,20 +1318,20 @@ void tx_menu(GtkWidget *parent) {
   gtk_grid_attach(GTK_GRID(grid), mbtn, col, row, 1, 1);
   g_signal_connect(mbtn, "toggled", G_CALLBACK(sel_cb), GINT_TO_POINTER(TX_CONTAINER));
   col++;
-  btn = gtk_radio_button_new_with_label_from_widget(GTK_RADIO_BUTTON(mbtn), "TX ProAudio Tools");
+  btn = gtk_radio_button_new_with_label_from_widget(GTK_RADIO_BUTTON(mbtn), "WDSP TX Audio Tools");
   gtk_widget_set_name(btn, "smalllabel_blue_bold");
-  gtk_widget_set_tooltip_text(btn, "Adjust CFC, Leveler, Phase Rotator & Speech Processor\n"
+  gtk_widget_set_tooltip_text(btn, "Adjust Leveler, Phase Rotator, Speech Processor & DEXP\n"
                                    "Enable/Disable CESSB function");
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(btn), (which_container == PROAUDIO_CONTAINER));
+  gtk_grid_attach(GTK_GRID(grid), btn, col, row, 1, 1);
+  g_signal_connect(btn, "toggled", G_CALLBACK(sel_cb), GINT_TO_POINTER(PROAUDIO_CONTAINER));
+  col++;
+  btn = gtk_radio_button_new_with_label_from_widget(GTK_RADIO_BUTTON(mbtn), "WDSP CFC");
+  gtk_widget_set_name(btn, "smalllabel_blue_bold");
+  gtk_widget_set_tooltip_text(btn, "Adjust Continuous Frequency Compressor");
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(btn), (which_container == CFC_CONTAINER));
   gtk_grid_attach(GTK_GRID(grid), btn, col, row, 1, 1);
   g_signal_connect(btn, "toggled", G_CALLBACK(sel_cb), GINT_TO_POINTER(CFC_CONTAINER));
-  col++;
-  btn = gtk_radio_button_new_with_label_from_widget(GTK_RADIO_BUTTON(mbtn), "DEXP Adjustment");
-  gtk_widget_set_name(btn, "smalllabel_bold");
-  gtk_widget_set_tooltip_text(btn, "Adjust Downward Expander");
-  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(btn), (which_container == DEXP_CONTAINER));
-  gtk_grid_attach(GTK_GRID(grid), btn, col, row, 1, 1);
-  g_signal_connect(btn, "toggled", G_CALLBACK(sel_cb), GINT_TO_POINTER(DEXP_CONTAINER));
   col++;
   btn = gtk_radio_button_new_with_label_from_widget(GTK_RADIO_BUTTON(mbtn), "Peak Labels");
   gtk_widget_set_name(btn, "smalllabel_bold");
@@ -1220,14 +1412,14 @@ void tx_menu(GtkWidget *parent) {
   if (n_input_devices > 0) {
     row++;
     col = 0;
-    btn = gtk_check_button_new_with_label("Use computer\naudio input");
-    gtk_widget_set_tooltip_text(btn, "Enable computer audio as mic input\n"
-                                     "(if your SDR-TRX hasn't an own mic input)");
-    gtk_widget_set_halign(btn, GTK_ALIGN_CENTER);
-    gtk_widget_set_name(btn, "smallabel");
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(btn), transmitter->local_microphone);
-    gtk_grid_attach(GTK_GRID(tx_grid), btn, col++, row, 1, 1);
-    g_signal_connect(btn, "toggled", G_CALLBACK(chkbtn_cb), GINT_TO_POINTER(TX_LOCAL_MIC));
+    loc_mic_btn = gtk_check_button_new_with_label("Use computer\naudio input");
+    gtk_widget_set_tooltip_text(loc_mic_btn, "Enable computer audio as mic input\n"
+                                             "(if your SDR-TRX hasn't an own mic input)");
+    gtk_widget_set_halign(loc_mic_btn, GTK_ALIGN_CENTER);
+    gtk_widget_set_name(loc_mic_btn, "smallabel");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(loc_mic_btn), transmitter->local_microphone);
+    gtk_grid_attach(GTK_GRID(tx_grid), loc_mic_btn, col++, row, 1, 1);
+    loc_mic_btn_signal_id = g_signal_connect(loc_mic_btn, "toggled", G_CALLBACK(chkbtn_cb), GINT_TO_POINTER(TX_LOCAL_MIC));
     input = gtk_combo_box_text_new();
     gtk_widget_set_tooltip_text(input, "Select one of your local audio devices as mic input,\n"
                                        "which is connected to your computer.");
@@ -1260,36 +1452,46 @@ void tx_menu(GtkWidget *parent) {
     //
     // Mic Boost, Mic In, and Line In can the handled mutually exclusive
     //
-    btn = gtk_combo_box_text_new();
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(btn), NULL, "Mic In");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(btn), NULL, "Mic Boost");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(btn), NULL, "Line In");
+    sdr_mic_btn = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(sdr_mic_btn), NULL, "Mic In");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(sdr_mic_btn), NULL, "Mic Boost");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(sdr_mic_btn), NULL, "Line In");
     int pos = 0;
     if (mic_linein) {
       pos = 2;
     } else if (mic_boost) {
       pos = 1;
     }
-    gtk_combo_box_set_active(GTK_COMBO_BOX(btn), pos);
-    my_combo_attach(GTK_GRID(tx_grid), btn, col++, row, 1, 1);
-    g_signal_connect(btn, "changed", G_CALLBACK(mic_in_cb), NULL);
-    if (transmitter->local_microphone) {
-      gtk_widget_set_sensitive(btn, FALSE);
-    }
+    gtk_combo_box_set_active(GTK_COMBO_BOX(sdr_mic_btn), pos);
+    my_combo_attach(GTK_GRID(tx_grid), sdr_mic_btn, col, row, 1, 1);
+    g_signal_connect(sdr_mic_btn, "changed", G_CALLBACK(mic_in_cb), NULL);
+    update_sdr_mic_btn();
+    col++;
+    btn = gtk_button_new_with_label(tx_get_monitor_post() ? "POST TX MONITOR" : "PRE TX MONITOR");
+    gtk_widget_set_name(btn, "boldlabel");
+    gtk_widget_set_tooltip_text(btn,
+                                "TX Monitor tap:\n"
+                                "PRE  = TX audio after Mic Gain/PreAmp, but before WDSP\n"
+                                "POST = TX audio after the complete WDSP TX processing chain\n\n"
+                                "Activation: Long press [VOL RX1/RX2] for switch to TX Monitor\n"
+                                "            Long press again for switch back to [VOL RX1/RX2]");
+    gtk_grid_attach(GTK_GRID(tx_grid), btn, col, row, 1, 1);
+    gtk_widget_set_margin_start(btn, 8);
+    gtk_widget_set_hexpand(btn, FALSE);
+    gtk_widget_set_halign(btn, GTK_ALIGN_START);
+    g_signal_connect(btn, "clicked", G_CALLBACK(monitor_tap_cb), NULL);
     col++;
     label = gtk_label_new("SDR LineIn (dB)");
     gtk_widget_set_name(label, "boldlabel");
     gtk_widget_set_halign(label, GTK_ALIGN_END);
     gtk_grid_attach(GTK_GRID(tx_grid), label, col, row, 1, 1);
     col++;
-    btn = gtk_spin_button_new_with_range(-34.5, 12.0, 1.5);
-    gtk_spin_button_set_digits(GTK_SPIN_BUTTON(btn), 1);
-    gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), linein_gain);
-    gtk_grid_attach(GTK_GRID(tx_grid), btn, col, row, 1, 1);
-    g_signal_connect(G_OBJECT(btn), "value_changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(TX_LINEIN));
-    if (transmitter->local_microphone) {
-      gtk_widget_set_sensitive(btn, FALSE);
-    }
+    sdr_linein_btn = gtk_spin_button_new_with_range(-34.5, 12.0, 1.5);
+    gtk_spin_button_set_digits(GTK_SPIN_BUTTON(sdr_linein_btn), 1);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(sdr_linein_btn), linein_gain);
+    gtk_grid_attach(GTK_GRID(tx_grid), sdr_linein_btn, col, row, 1, 1);
+    g_signal_connect(G_OBJECT(sdr_linein_btn), "value_changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(TX_LINEIN));
+    update_sdr_mic_btn();
     row++;
     GtkWidget *trennline = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
     gtk_widget_set_size_request(trennline, -1, 3);
@@ -1497,7 +1699,7 @@ void tx_menu(GtkWidget *parent) {
   g_signal_connect(btn, "value_changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(TX_AM_CARRIER));
   row++;
   col = 2;
-  btn = gtk_check_button_new_with_label("Fill Panadapter");
+  btn = gtk_check_button_new_with_label("Fill TX Panadapter");
   gtk_widget_set_name(btn, "boldlabel");
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(btn), transmitter->display_filled);
   gtk_grid_attach(GTK_GRID(tx_grid), btn, col, row, 1, 1);
@@ -1513,12 +1715,181 @@ void tx_menu(GtkWidget *parent) {
   gtk_grid_attach(GTK_GRID(tx_grid), btn, col, row, 1, 1);
   g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(TX_DIGI_DRIVE));
   //
+  // ProAudio container and controls therein
+  //
+  gtk_grid_attach(GTK_GRID(grid), proaudio_container, 0, 1, 5, 1);
+  GtkWidget *proaudio_grid = gtk_grid_new();
+  gtk_grid_set_column_spacing(GTK_GRID(proaudio_grid), 5);
+  gtk_grid_set_row_spacing(GTK_GRID(proaudio_grid), 5);
+  gtk_container_add(GTK_CONTAINER(proaudio_container), proaudio_grid);
+  row = 0;
+  btn = gtk_check_button_new_with_label("Phase Rotator");
+  gtk_widget_set_name(btn, "boldlabel_blue");
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(btn), transmitter->phrot_enable);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), btn, 0, row, 1, 1);
+  g_signal_connect(btn, "toggled", G_CALLBACK(chkbtn_cb), GINT_TO_POINTER(TX_PHROT_ENABLE));
+  btn = gtk_spin_button_new_with_range(1.0, 15.0, 1.0);
+  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->phrot_stage);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), btn, 1, row, 1, 1);
+  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(TX_PHROT_STAGE));
+  btn = gtk_spin_button_new_with_range(1.0, 500.0, 1.0);
+  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->phrot_freq);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), btn, 2, row, 1, 1);
+  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(TX_PHROT_FREQ));
+  row++;
+  btn = gtk_check_button_new_with_label("Leveler");
+  gtk_widget_set_name(btn, "boldlabel_blue");
+  gtk_widget_set_halign(btn, GTK_ALIGN_START);
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(btn), transmitter->lev_enable);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), btn, 0, row, 1, 1);
+  g_signal_connect(btn, "toggled", G_CALLBACK(chkbtn_cb), GINT_TO_POINTER(TX_LEVELER_ENABLE));
+  btn = gtk_spin_button_new_with_range(0.0, 15.0, 1.0);
+  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), (double) transmitter->lev_gain);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), btn, 1, row, 1, 1);
+  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(TX_LEVELER_GAIN));
+  btn = gtk_spin_button_new_with_range(0.0, 500.0, 1.0);
+  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->lev_decay);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), btn, 2, row, 1, 1);
+  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(TX_LEVELER_DECAY));
+  row++;
+  btn = gtk_check_button_new_with_label("Speech Proc");
+  gtk_widget_set_tooltip_text(btn, "Speech Processor:\n"
+                                   "Type: Baseband Compressor — Optimize your voice transmission\n"
+                                   "Requires ENABLE(>1) when using the CESSB function");
+  gtk_widget_set_name(btn, "boldlabel_blue");
+  gtk_widget_set_halign(btn, GTK_ALIGN_START);
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(btn), transmitter->compressor);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), btn, 0, row, 1, 1);
+  g_signal_connect(btn, "toggled", G_CALLBACK(chkbtn_cb), GINT_TO_POINTER(TX_COMP_ENABLE));
+  btn = gtk_spin_button_new_with_range(0.0, 20.0, 1.0);
+  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), (double) transmitter->compressor_level);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), btn, 1, row, 1, 1);
+  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(TX_COMP));
+  btn = gtk_check_button_new_with_label("Auto CESSB");
+  gtk_widget_set_tooltip_text(btn, "Controlled-Envelope SSB\nWorks only if:\n"
+                                   "- Speech Processor is ENABLED\n"
+                                   "- TX-DSP is NOT set to Low Latency");
+  gtk_widget_set_name(btn, "boldlabel_blue");
+  gtk_widget_set_halign(btn, GTK_ALIGN_END);
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(btn), transmitter->cessb_enable);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), btn, 2, row, 1, 1);
+  g_signal_connect(btn, "toggled", G_CALLBACK(chkbtn_cb), GINT_TO_POINTER(TX_CESSB_ENABLE));
+  row++;
+  btn = gtk_check_button_new_with_label("WDSP TX EQ Ctfmode");
+  gtk_widget_set_tooltip_text(btn, "The cutoff-mode used in the generation\nof the EQ filter can be selected.\n\n"
+                                   "If ON:\nNo roll-off outside the specified passband (default is OFF).");
+  gtk_widget_set_name(btn, "boldlabel_blue");
+  gtk_widget_set_halign(btn, GTK_ALIGN_START);
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(btn), transmitter->eq_ctfmode);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), btn, 0, row, 1, 1);
+  g_signal_connect(btn, "toggled", G_CALLBACK(chkbtn_cb), GINT_TO_POINTER(TX_CTFMODE));
+  //
+  // DEXP controls are part of the ProAudio container.
+  //
+  row++;
+  GtkWidget *dexp_separator = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+  gtk_widget_set_size_request(dexp_separator, -1, 3);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), dexp_separator, 0, row, 6, 1);
+  row++;
+  btn = gtk_check_button_new_with_label("Use DEXP");
+  gtk_widget_set_name(btn, "boldlabel");
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(btn), transmitter->dexp);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), btn, 0, row, 1, 1);
+  g_signal_connect(btn, "toggled", G_CALLBACK(chkbtn_cb), GINT_TO_POINTER(DEXP_ONOFF));
+  btn = gtk_check_button_new_with_label("Use Side Channel Filter");
+  gtk_widget_set_name(btn, "boldlabel");
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(btn), transmitter->dexp_filter);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), btn, 2, row, 1, 1);
+  g_signal_connect(btn, "toggled", G_CALLBACK(chkbtn_cb), GINT_TO_POINTER(DEXP_FILTER));
+  row++;
+  label = gtk_label_new("Expansion Factor (dB)");
+  gtk_widget_set_name(label, "boldlabel");
+  gtk_widget_set_halign(label, GTK_ALIGN_END);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), label, 0, row, 1, 1);
+  btn = gtk_spin_button_new_with_range(0.00, 30.0, 1.0);
+  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->dexp_exp);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), btn, 1, row, 1, 1);
+  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(DEXP_EXP));
+  label = gtk_label_new("Filter Low-Cut (Hz)");
+  gtk_widget_set_name(label, "boldlabel");
+  gtk_widget_set_halign(label, GTK_ALIGN_END);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), label, 2, row, 1, 1);
+  btn = gtk_spin_button_new_with_range(0.00, 1200.0, 25.0);
+  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->dexp_filter_low);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), btn, 3, row, 1, 1);
+  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(DEXP_FILTER_LOW));
+  row++;
+  label = gtk_label_new("Hysteresis Ratio");
+  gtk_widget_set_name(label, "boldlabel");
+  gtk_widget_set_halign(label, GTK_ALIGN_END);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), label, 0, row, 1, 1);
+  btn = gtk_spin_button_new_with_range(0.05, 0.95, 0.01);
+  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->dexp_hyst);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), btn, 1, row, 1, 1);
+  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(DEXP_HYST));
+  label = gtk_label_new("Filter High-Cut (Hz)");
+  gtk_widget_set_name(label, "boldlabel");
+  gtk_widget_set_halign(label, GTK_ALIGN_END);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), label, 2, row, 1, 1);
+  btn = gtk_spin_button_new_with_range(500.00, 10000.0, 25.0);
+  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->dexp_filter_high);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), btn, 3, row, 1, 1);
+  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(DEXP_FILTER_HIGH));
+  row++;
+  label = gtk_label_new("Trigger Level (dB)");
+  gtk_widget_set_name(label, "boldlabel");
+  gtk_widget_set_halign(label, GTK_ALIGN_END);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), label, 0, row, 1, 1);
+  btn = gtk_spin_button_new_with_range(-40.0, -10.0, 1.0);
+  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->dexp_trigger);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), btn, 1, row, 1, 1);
+  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(DEXP_TRIGGER));
+  row++;
+  label = gtk_label_new("Trigger Attack tau (ms)");
+  gtk_widget_set_name(label, "boldlabel");
+  gtk_widget_set_halign(label, GTK_ALIGN_END);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), label, 0, row, 1, 1);
+  btn = gtk_spin_button_new_with_range(1.0, 250.0, 1.0);
+  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), 1000.0 * transmitter->dexp_tau);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), btn, 1, row, 1, 1);
+  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(DEXP_TAU));
+  row++;
+  label = gtk_label_new("Trigger Attack Time (ms)");
+  gtk_widget_set_name(label, "boldlabel");
+  gtk_widget_set_halign(label, GTK_ALIGN_END);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), label, 0, row, 1, 1);
+  btn = gtk_spin_button_new_with_range(1.0, 250.0, 1.0);
+  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), 1000.0 * transmitter->dexp_attack);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), btn, 1, row, 1, 1);
+  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(DEXP_ATTACK));
+  row++;
+  label = gtk_label_new("Trigger Release Time (ms)");
+  gtk_widget_set_name(label, "boldlabel");
+  gtk_widget_set_halign(label, GTK_ALIGN_END);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), label, 0, row, 1, 1);
+  btn = gtk_spin_button_new_with_range(1.0, 500.0, 1.0);
+  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), 1000.0 * transmitter->dexp_release);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), btn, 1, row, 1, 1);
+  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(DEXP_RELEASE));
+  row++;
+  label = gtk_label_new("Trigger Hold Time (ms)");
+  gtk_widget_set_name(label, "boldlabel");
+  gtk_widget_set_halign(label, GTK_ALIGN_END);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), label, 0, row, 1, 1);
+  btn = gtk_spin_button_new_with_range(10.0, 1500.0, 10.0);
+  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), 1000.0 * transmitter->dexp_hold);
+  gtk_grid_attach(GTK_GRID(proaudio_grid), btn, 1, row, 1, 1);
+  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(DEXP_HOLD));
+  //
+  //
   // CFC container and controls therein
   //
   gtk_grid_attach(GTK_GRID(grid), cfc_container, 0, 1, 5, 1);
   GtkWidget *cfc_grid = gtk_grid_new();
-  gtk_grid_set_column_spacing(GTK_GRID(cfc_grid), 5);
-  gtk_grid_set_row_spacing(GTK_GRID(cfc_grid), 5);
+  gtk_widget_set_hexpand(cfc_grid, TRUE);
+  gtk_widget_set_halign(cfc_grid, GTK_ALIGN_FILL);
+  gtk_grid_set_column_spacing(GTK_GRID(cfc_grid), 2);
+  gtk_grid_set_row_spacing(GTK_GRID(cfc_grid), 3);
   gtk_container_add(GTK_CONTAINER(cfc_container), cfc_grid);
   row = 0;
   btn = gtk_check_button_new_with_label("Use Pre-CFC");
@@ -1531,82 +1902,24 @@ void tx_menu(GtkWidget *parent) {
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(btn), transmitter->cfc_eq);
   gtk_grid_attach(GTK_GRID(cfc_grid), btn, 1, row, 1, 1);
   g_signal_connect(btn, "toggled", G_CALLBACK(chkbtn_cb), GINT_TO_POINTER(CFC_EQ));
-  btn = gtk_check_button_new_with_label("Phase Rotator");
-  gtk_widget_set_name(btn, "boldlabel_blue");
-  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(btn), transmitter->phrot_enable);
-  gtk_grid_attach(GTK_GRID(cfc_grid), btn, 3, row, 1, 1);
-  g_signal_connect(btn, "toggled", G_CALLBACK(chkbtn_cb), GINT_TO_POINTER(TX_PHROT_ENABLE));
-  btn = gtk_spin_button_new_with_range(1.0, 15.0, 1.0);
-  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->phrot_stage);
-  gtk_grid_attach(GTK_GRID(cfc_grid), btn, 4, row, 1, 1);
-  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(TX_PHROT_STAGE));
-  btn = gtk_spin_button_new_with_range(1.0, 500.0, 1.0);
-  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->phrot_freq);
-  gtk_grid_attach(GTK_GRID(cfc_grid), btn, 5, row, 1, 1);
-  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(TX_PHROT_FREQ));
-  row++;
-  label = gtk_label_new("Pre Compression:");
+  label = gtk_label_new("Pre Comp:");
   gtk_widget_set_name(label, "boldlabel");
   gtk_widget_set_halign(label, GTK_ALIGN_END);
-  gtk_grid_attach(GTK_GRID(cfc_grid), label, 0, row, 1, 1);
+  gtk_grid_attach(GTK_GRID(cfc_grid), label, 2, row, 1, 1);
   btn = gtk_spin_button_new_with_range(0.0, 20.0, 1.0);
+  gtk_entry_set_width_chars(GTK_ENTRY(btn), 3);
   gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->cfc_lvl[0]);
-  gtk_grid_attach(GTK_GRID(cfc_grid), btn, 1, row, 1, 1);
-  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(CFCLVL));
-  btn = gtk_check_button_new_with_label("Leveler");
-  gtk_widget_set_name(btn, "boldlabel_blue");
-  gtk_widget_set_halign(btn, GTK_ALIGN_START);
-  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(btn), transmitter->lev_enable);
   gtk_grid_attach(GTK_GRID(cfc_grid), btn, 3, row, 1, 1);
-  g_signal_connect(btn, "toggled", G_CALLBACK(chkbtn_cb), GINT_TO_POINTER(TX_LEVELER_ENABLE));
-  btn = gtk_spin_button_new_with_range(0.0, 15.0, 1.0);
-  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), (double) transmitter->lev_gain);
-  gtk_grid_attach(GTK_GRID(cfc_grid), btn, 4, row, 1, 1);
-  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(TX_LEVELER_GAIN));
-  btn = gtk_spin_button_new_with_range(0.0, 500.0, 1.0);
-  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->lev_decay);
-  gtk_grid_attach(GTK_GRID(cfc_grid), btn, 5, row, 1, 1);
-  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(TX_LEVELER_DECAY));
-  row++;
+  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(CFCLVL));
   label = gtk_label_new("Post Gain:");
   gtk_widget_set_name(label, "boldlabel");
   gtk_widget_set_halign(label, GTK_ALIGN_END);
-  gtk_grid_attach(GTK_GRID(cfc_grid), label, 0, row, 1, 1);
+  gtk_grid_attach(GTK_GRID(cfc_grid), label, 4, row, 1, 1);
   btn = gtk_spin_button_new_with_range(-20.0, 20.0, 1.0);
+  gtk_entry_set_width_chars(GTK_ENTRY(btn), 3);
   gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->cfc_post[0]);
-  gtk_grid_attach(GTK_GRID(cfc_grid), btn, 1, row, 1, 1);
-  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(CFCPOST));
-  btn = gtk_check_button_new_with_label("Speech Proc");
-  gtk_widget_set_tooltip_text(btn, "Speech Processor:\n"
-                                   "Type: Baseband Compressor — Optimize your voice transmission\n"
-                                   "Requires ENABLE(>1) when using the CESSB function");
-  gtk_widget_set_name(btn, "boldlabel_blue");
-  gtk_widget_set_halign(btn, GTK_ALIGN_START);
-  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(btn), transmitter->compressor);
-  gtk_grid_attach(GTK_GRID(cfc_grid), btn, 3, row, 1, 1);
-  g_signal_connect(btn, "toggled", G_CALLBACK(chkbtn_cb), GINT_TO_POINTER(TX_COMP_ENABLE));
-  btn = gtk_spin_button_new_with_range(0.0, 20.0, 1.0);
-  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), (double) transmitter->compressor_level);
-  gtk_grid_attach(GTK_GRID(cfc_grid), btn, 4, row, 1, 1);
-  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(TX_COMP));
-  btn = gtk_check_button_new_with_label("Auto CESSB");
-  gtk_widget_set_tooltip_text(btn, "Controlled-Envelope SSB\nWorks only if:\n"
-                                   "- Speech Processor is ENABLED\n"
-                                   "- TX-DSP is NOT set to Low Latency");
-  gtk_widget_set_name(btn, "boldlabel_blue");
-  gtk_widget_set_halign(btn, GTK_ALIGN_END);
-  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(btn), transmitter->cessb_enable);
   gtk_grid_attach(GTK_GRID(cfc_grid), btn, 5, row, 1, 1);
-  g_signal_connect(btn, "toggled", G_CALLBACK(chkbtn_cb), GINT_TO_POINTER(TX_CESSB_ENABLE));
-  row++;
-  btn = gtk_check_button_new_with_label("TX-EQ Ctfmode");
-  gtk_widget_set_tooltip_text(btn, "The cutoff-mode used in the generation\nof the EQ filter can be selected.\n\n"
-                                   "If ON:\nNo roll-off outside the specified passband (default is OFF).");
-  gtk_widget_set_name(btn, "boldlabel_blue");
-  gtk_widget_set_halign(btn, GTK_ALIGN_START);
-  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(btn), transmitter->eq_ctfmode);
-  gtk_grid_attach(GTK_GRID(cfc_grid), btn, 3, row, 1, 1);
-  g_signal_connect(btn, "toggled", G_CALLBACK(chkbtn_cb), GINT_TO_POINTER(TX_CTFMODE));
+  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(CFCPOST));
   row++;
   GtkWidget *line = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
   gtk_widget_set_size_request(line, -1, 3);
@@ -1614,166 +1927,106 @@ void tx_menu(GtkWidget *parent) {
   row++;
   char cfc_label_txt[256];
   snprintf(cfc_label_txt, sizeof(cfc_label_txt),
-           "CFC: This is a Multiband Compressor, not an EQ. Adjust and shape your audio with the TX-EQ first.");
+           "CFC: Multiband Compressor, not an EQ.\n"
+           "Adjust and shape your audio with the WDSP TX EQ first.");
   GtkWidget *cfc_label = gtk_label_new(cfc_label_txt);
   gtk_widget_set_name(cfc_label, "smalllabel_blue_bold");
   gtk_grid_attach(GTK_GRID(cfc_grid), cfc_label, 0, row, 6, 1);
+  row++;
+  GtkWidget *cfc_graph = cfc_graph_create(transmitter);
+  gtk_grid_attach(GTK_GRID(cfc_grid), cfc_graph, 0, row, 6, 1);
   // Frequency, Level, Post-Gain
   row++;
-  label = gtk_label_new("Frequency");
+  GtkWidget *cfc_points_grid = gtk_grid_new();
+  gtk_grid_set_column_spacing(GTK_GRID(cfc_points_grid), 2);
+  gtk_grid_set_row_spacing(GTK_GRID(cfc_points_grid), 3);
+  gtk_widget_set_halign(cfc_points_grid, GTK_ALIGN_CENTER);
+  gtk_widget_set_hexpand(cfc_points_grid, FALSE);
+  gtk_grid_attach(GTK_GRID(cfc_grid), cfc_points_grid, 0, row, 6, 1);
+  int cfc_point_row = 0;
+  label = gtk_label_new("Freq.");
   gtk_widget_set_name(label, "boldlabel");
-  gtk_grid_attach(GTK_GRID(cfc_grid), label, 0, row, 1, 1);
-  label = gtk_label_new("Frequency");
+  gtk_grid_attach(GTK_GRID(cfc_points_grid), label, 0, cfc_point_row, 1, 1);
+  label = gtk_label_new("Pre");
   gtk_widget_set_name(label, "boldlabel");
-  gtk_grid_attach(GTK_GRID(cfc_grid), label, 3, row, 1, 1);
-  label = gtk_label_new("Pre Comp Level");
+  gtk_grid_attach(GTK_GRID(cfc_points_grid), label, 1, cfc_point_row, 1, 1);
+  label = gtk_label_new("Post");
   gtk_widget_set_name(label, "boldlabel");
-  gtk_grid_attach(GTK_GRID(cfc_grid), label, 1, row, 1, 1);
-  label = gtk_label_new("Pre Comp Level");
+  gtk_grid_attach(GTK_GRID(cfc_points_grid), label, 2, cfc_point_row, 1, 1);
+  label = gtk_label_new("Freq.");
   gtk_widget_set_name(label, "boldlabel");
-  gtk_grid_attach(GTK_GRID(cfc_grid), label, 4, row, 1, 1);
-  label = gtk_label_new("Post Gain");
+  gtk_grid_attach(GTK_GRID(cfc_points_grid), label, 3, cfc_point_row, 1, 1);
+  label = gtk_label_new("Pre");
   gtk_widget_set_name(label, "boldlabel");
-  gtk_grid_attach(GTK_GRID(cfc_grid), label, 2, row, 1, 1);
-  label = gtk_label_new("Post Gain");
+  gtk_grid_attach(GTK_GRID(cfc_points_grid), label, 4, cfc_point_row, 1, 1);
+  label = gtk_label_new("Post");
   gtk_widget_set_name(label, "boldlabel");
-  gtk_grid_attach(GTK_GRID(cfc_grid), label, 5, row, 1, 1);
+  gtk_grid_attach(GTK_GRID(cfc_points_grid), label, 5, cfc_point_row, 1, 1);
   if (can_transmit) {
     sort_cfc(transmitter);
+    int cfc_mode = vfo[vfo_get_tx_vfo()].mode;
+    for (int i = 1; i <= 12; i++) {
+      mode_settings[cfc_mode].cfc_freq[i] = transmitter->cfc_freq[i];
+      mode_settings[cfc_mode].cfc_lvl[i] = transmitter->cfc_lvl[i];
+      mode_settings[cfc_mode].cfc_post[i] = transmitter->cfc_post[i];
+      mode_settings[cfc_mode].cfc_comp_weight[i - 1] = transmitter->cfc_comp_weight[i - 1];
+      mode_settings[cfc_mode].cfc_post_weight[i - 1] = transmitter->cfc_post_weight[i - 1];
+    }
+    copy_mode_settings(cfc_mode);
   }
   const int max_cfc_zeilen = 6;
   for (int i = 1; i <= max_cfc_zeilen; i++) {
-    row++; // neue Zeile
+    cfc_point_row++;
     //------------------------------------------------------------------------------------------------------------------
     btn = gtk_spin_button_new_with_range(10.0, 16000.0, 10.0);
+    gtk_entry_set_width_chars(GTK_ENTRY(btn), 5);
+    gtk_widget_set_hexpand(btn, FALSE);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->cfc_freq[i]);
-    gtk_grid_attach(GTK_GRID(cfc_grid), btn, 0, row, 1, 1);
+    gtk_grid_attach(GTK_GRID(cfc_points_grid), btn, 0, cfc_point_row, 1, 1);
     g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(CFCFREQ + i));
+    cfc_graph_bind_control(i, btn, NULL, NULL);
     //------------------------------------------------------------------------------------------------------------------
     btn = gtk_spin_button_new_with_range(10.0, 16000.0, 10.0);
+    gtk_entry_set_width_chars(GTK_ENTRY(btn), 5);
+    gtk_widget_set_hexpand(btn, FALSE);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->cfc_freq[i + max_cfc_zeilen]);
-    gtk_grid_attach(GTK_GRID(cfc_grid), btn, 3, row, 1, 1);
+    gtk_grid_attach(GTK_GRID(cfc_points_grid), btn, 3, cfc_point_row, 1, 1);
     g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(CFCFREQ + i + max_cfc_zeilen));
+    cfc_graph_bind_control(i + max_cfc_zeilen, btn, NULL, NULL);
     //------------------------------------------------------------------------------------------------------------------
     btn = gtk_spin_button_new_with_range(0.0, 20.0, 1.0);
+    gtk_entry_set_width_chars(GTK_ENTRY(btn), 3);
+    gtk_widget_set_hexpand(btn, FALSE);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->cfc_lvl[i]);
-    gtk_grid_attach(GTK_GRID(cfc_grid), btn, 1, row, 1, 1);
+    gtk_grid_attach(GTK_GRID(cfc_points_grid), btn, 1, cfc_point_row, 1, 1);
     g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(CFCLVL + i));
+    cfc_graph_bind_control(i, NULL, btn, NULL);
     //------------------------------------------------------------------------------------------------------------------
     btn = gtk_spin_button_new_with_range(0.0, 20.0, 1.0);
+    gtk_entry_set_width_chars(GTK_ENTRY(btn), 3);
+    gtk_widget_set_hexpand(btn, FALSE);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->cfc_lvl[i + max_cfc_zeilen]);
-    gtk_grid_attach(GTK_GRID(cfc_grid), btn, 4, row, 1, 1);
+    gtk_grid_attach(GTK_GRID(cfc_points_grid), btn, 4, cfc_point_row, 1, 1);
     g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(CFCLVL + i + max_cfc_zeilen));
+    cfc_graph_bind_control(i + max_cfc_zeilen, NULL, btn, NULL);
     //------------------------------------------------------------------------------------------------------------------
     btn = gtk_spin_button_new_with_range(-20.0, 20.0, 1.0);
+    gtk_entry_set_width_chars(GTK_ENTRY(btn), 3);
+    gtk_widget_set_hexpand(btn, FALSE);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->cfc_post[i]);
-    gtk_grid_attach(GTK_GRID(cfc_grid), btn, 2, row, 1, 1);
+    gtk_grid_attach(GTK_GRID(cfc_points_grid), btn, 2, cfc_point_row, 1, 1);
     g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(CFCPOST + i));
+    cfc_graph_bind_control(i, NULL, NULL, btn);
     //------------------------------------------------------------------------------------------------------------------
     btn = gtk_spin_button_new_with_range(-20.0, 20.0, 1.0);
+    gtk_entry_set_width_chars(GTK_ENTRY(btn), 3);
+    gtk_widget_set_hexpand(btn, FALSE);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->cfc_post[i + max_cfc_zeilen]);
-    gtk_grid_attach(GTK_GRID(cfc_grid), btn, 5, row, 1, 1);
+    gtk_grid_attach(GTK_GRID(cfc_points_grid), btn, 5, cfc_point_row, 1, 1);
     g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(CFCPOST + i + max_cfc_zeilen));
+    cfc_graph_bind_control(i + max_cfc_zeilen, NULL, NULL, btn);
     //------------------------------------------------------------------------------------------------------------------
   }
-  //
-  // DEXP container and controls therein
-  //
-  gtk_grid_attach(GTK_GRID(grid), dexp_container, 0, 1, 5, 1);
-  GtkWidget *dexp_grid = gtk_grid_new();
-  gtk_grid_set_column_spacing(GTK_GRID(dexp_grid), 5);
-  gtk_grid_set_row_spacing(GTK_GRID(dexp_grid), 5);
-  gtk_container_add(GTK_CONTAINER(dexp_container), dexp_grid);
-  row = 0;
-  btn = gtk_check_button_new_with_label("Use DEXP");
-  gtk_widget_set_name(btn, "boldlabel");
-  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(btn), transmitter->dexp);
-  gtk_grid_attach(GTK_GRID(dexp_grid), btn, 0, row, 1, 1);
-  g_signal_connect(btn, "toggled", G_CALLBACK(chkbtn_cb), GINT_TO_POINTER(DEXP_ONOFF));
-  btn = gtk_check_button_new_with_label("Use Side Channel Filter");
-  gtk_widget_set_name(btn, "boldlabel");
-  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(btn), transmitter->dexp_filter);
-  gtk_grid_attach(GTK_GRID(dexp_grid), btn, 2, row, 1, 1);
-  g_signal_connect(btn, "toggled", G_CALLBACK(chkbtn_cb), GINT_TO_POINTER(DEXP_FILTER));
-  row++;
-  label = gtk_label_new("Expansion Factor (dB)");
-  gtk_widget_set_name(label, "boldlabel");
-  gtk_widget_set_halign(label, GTK_ALIGN_END);
-  gtk_grid_attach(GTK_GRID(dexp_grid), label, 0, row, 1, 1);
-  btn = gtk_spin_button_new_with_range(0.00, 30.0, 1.0);
-  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->dexp_exp);
-  gtk_grid_attach(GTK_GRID(dexp_grid), btn, 1, row, 1, 1);
-  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(DEXP_EXP));
-  label = gtk_label_new("Filter Low-Cut (Hz)");
-  gtk_widget_set_name(label, "boldlabel");
-  gtk_widget_set_halign(label, GTK_ALIGN_END);
-  gtk_grid_attach(GTK_GRID(dexp_grid), label, 2, row, 1, 1);
-  btn = gtk_spin_button_new_with_range(0.00, 1200.0, 25.0);
-  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->dexp_filter_low);
-  gtk_grid_attach(GTK_GRID(dexp_grid), btn, 3, row, 1, 1);
-  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(DEXP_FILTER_LOW));
-  row++;
-  label = gtk_label_new("Hysteresis Ratio");
-  gtk_widget_set_name(label, "boldlabel");
-  gtk_widget_set_halign(label, GTK_ALIGN_END);
-  gtk_grid_attach(GTK_GRID(dexp_grid), label, 0, row, 1, 1);
-  btn = gtk_spin_button_new_with_range(0.05, 0.95, 0.01);
-  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->dexp_hyst);
-  gtk_grid_attach(GTK_GRID(dexp_grid), btn, 1, row, 1, 1);
-  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(DEXP_HYST));
-  label = gtk_label_new("Filter High-Cut (Hz)");
-  gtk_widget_set_name(label, "boldlabel");
-  gtk_widget_set_halign(label, GTK_ALIGN_END);
-  gtk_grid_attach(GTK_GRID(dexp_grid), label, 2, row, 1, 1);
-  btn = gtk_spin_button_new_with_range(500.00, 10000.0, 25.0);
-  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->dexp_filter_high);
-  gtk_grid_attach(GTK_GRID(dexp_grid), btn, 3, row, 1, 1);
-  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(DEXP_FILTER_HIGH));
-  row++;
-  label = gtk_label_new("Trigger Level (dB)");
-  gtk_widget_set_name(label, "boldlabel");
-  gtk_widget_set_halign(label, GTK_ALIGN_END);
-  gtk_grid_attach(GTK_GRID(dexp_grid), label, 0, row, 1, 1);
-  btn = gtk_spin_button_new_with_range(-40.0, -10.0, 1.0);
-  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->dexp_trigger);
-  gtk_grid_attach(GTK_GRID(dexp_grid), btn, 1, row, 1, 1);
-  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(DEXP_TRIGGER));
-  row++;
-  label = gtk_label_new("Trigger Attack tau (ms)");
-  gtk_widget_set_name(label, "boldlabel");
-  gtk_widget_set_halign(label, GTK_ALIGN_END);
-  gtk_grid_attach(GTK_GRID(dexp_grid), label, 0, row, 1, 1);
-  btn = gtk_spin_button_new_with_range(1.0, 250.0, 1.0);
-  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), 1000.0 * transmitter->dexp_tau);
-  gtk_grid_attach(GTK_GRID(dexp_grid), btn, 1, row, 1, 1);
-  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(DEXP_TAU));
-  row++;
-  label = gtk_label_new("Trigger Attack Time (ms)");
-  gtk_widget_set_name(label, "boldlabel");
-  gtk_widget_set_halign(label, GTK_ALIGN_END);
-  gtk_grid_attach(GTK_GRID(dexp_grid), label, 0, row, 1, 1);
-  btn = gtk_spin_button_new_with_range(1.0, 250.0, 1.0);
-  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), 1000.0 * transmitter->dexp_attack);
-  gtk_grid_attach(GTK_GRID(dexp_grid), btn, 1, row, 1, 1);
-  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(DEXP_ATTACK));
-  row++;
-  label = gtk_label_new("Trigger Release Time (ms)");
-  gtk_widget_set_name(label, "boldlabel");
-  gtk_widget_set_halign(label, GTK_ALIGN_END);
-  gtk_grid_attach(GTK_GRID(dexp_grid), label, 0, row, 1, 1);
-  btn = gtk_spin_button_new_with_range(1.0, 500.0, 1.0);
-  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), 1000.0 * transmitter->dexp_release);
-  gtk_grid_attach(GTK_GRID(dexp_grid), btn, 1, row, 1, 1);
-  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(DEXP_RELEASE));
-  row++;
-  label = gtk_label_new("Trigger Hold Time (ms)");
-  gtk_widget_set_name(label, "boldlabel");
-  gtk_widget_set_halign(label, GTK_ALIGN_END);
-  gtk_grid_attach(GTK_GRID(dexp_grid), label, 0, row, 1, 1);
-  btn = gtk_spin_button_new_with_range(10.0, 1500.0, 10.0);
-  gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), 1000.0 * transmitter->dexp_hold);
-  gtk_grid_attach(GTK_GRID(dexp_grid), btn, 1, row, 1, 1);
-  g_signal_connect(btn, "value-changed", G_CALLBACK(spinbtn_cb), GINT_TO_POINTER(DEXP_HOLD));
   //
   // Peaks container and controls therein
   //
@@ -1846,31 +2099,31 @@ void tx_menu(GtkWidget *parent) {
   sub_menu = dialog;
   gtk_widget_show_all(dialog);
   //
-  // Only show one of the TX, CFC, DEXP containers
+  // Only show one of the TX, ProAudio, CFC, Peak Labels containers
   // This is the TX container upon first invocation of the TX menu,
   // but subsequent TX menu openings will show the container that
   // was active when leaving this menu before.
   //
   switch (which_container) {
   case TX_CONTAINER:
+    gtk_widget_hide(proaudio_container);
     gtk_widget_hide(cfc_container);
-    gtk_widget_hide(dexp_container);
+    gtk_widget_hide(peaks_container);
+    break;
+  case PROAUDIO_CONTAINER:
+    gtk_widget_hide(tx_container);
+    gtk_widget_hide(cfc_container);
     gtk_widget_hide(peaks_container);
     break;
   case CFC_CONTAINER:
     gtk_widget_hide(tx_container);
-    gtk_widget_hide(dexp_container);
-    gtk_widget_hide(peaks_container);
-    break;
-  case DEXP_CONTAINER:
-    gtk_widget_hide(tx_container);
-    gtk_widget_hide(cfc_container);
+    gtk_widget_hide(proaudio_container);
     gtk_widget_hide(peaks_container);
     break;
   case PEAKS_CONTAINER:
     gtk_widget_hide(tx_container);
+    gtk_widget_hide(proaudio_container);
     gtk_widget_hide(cfc_container);
-    gtk_widget_hide(dexp_container);
     break;
   }
 }

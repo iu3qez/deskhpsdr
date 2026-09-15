@@ -191,9 +191,16 @@ int atlas_janus = 0;
 
 //
 // if hl2_audio_codec is set,  audio data is included in the HPSDR
-// data stream and the "dither" bit is set. This is used by a
-// "compagnion board" and  a variant of the HL2 firmware
-// This bit can be set in the "RADIO" menu.
+// data stream. This is used by a "compagnion board" and  a variant
+// of the HL2 firmware. This can be set in the "RADIO" menu.
+//
+// HL2_CODEC_AK4951     (HL2+ companion board): in addition the "dither"
+//                      bit is set permanently, the gateware uses it to
+//                      flag "audio codec present".
+// HL2_CODEC_SQUARESDR2 (SQUARE SDR 2, codec on the main board): the
+//                      "dither" bit is NOT touched here, in that gateware
+//                      it switches the internal loudspeaker ON/OFF and is
+//                      controlled by "Dither Bit (HL2 Band Volts)" (RX menu).
 //
 // if hl2_cl1_input is set, CL1 is used as a master clock input
 // for a 10 MHz reference clock.
@@ -290,8 +297,8 @@ int block_cat_rx_if_tune = 1;
 char own_callsign[16] = "YOUR_CALLSIGN";
 char own_locator[15] = "JO01AA";
 char dxc_login[16] = "YOUR_CALLSIGN";
-char dxc_address[32] = "db0erf.de";
-long int dxc_port = 41113;
+char dxc_address[32] = "dx.da0bcc.de";
+long int dxc_port = 7300;
 int rbn_enabled = 0;
 int rbn_filter_cw = 1;
 int rbn_filter_rtty = 1;
@@ -1503,7 +1510,6 @@ void radio_start_radio(void) {
     pa_power = PA_1W;
     break;
   case DEVICE_HERMES_LITE2:
-  case NEW_DEVICE_HERMES_LITE2:
     pa_power = PA_5W;
     break;
   case DEVICE_STEMLAB:
@@ -1514,11 +1520,13 @@ void radio_start_radio(void) {
   case DEVICE_ANGELIA:
   case DEVICE_ORION:
   case DEVICE_STEMLAB_Z20:
+  case DEVICE_G2E:
   case NEW_DEVICE_HERMES:
   case NEW_DEVICE_HERMES2:
   case NEW_DEVICE_ANGELIA:
   case NEW_DEVICE_ORION:
   case NEW_DEVICE_SATURN:  // make 100W the default for G2
+  case NEW_DEVICE_G2E:
     pa_power = PA_100W;
     break;
   case DEVICE_ORION2:
@@ -1556,15 +1564,15 @@ void radio_start_radio(void) {
     have_alex_att = 1;
     break;
   case DEVICE_ORION2:
+  case DEVICE_G2E:
   case NEW_DEVICE_ORION2:
   case NEW_DEVICE_SATURN:
+  case NEW_DEVICE_G2E:
     // ANAN7000/8000/G2 boards have no ALEX attenuator
     have_rx_att = 1;
     break;
   case DEVICE_HERMES_LITE:
   case DEVICE_HERMES_LITE2:
-  case NEW_DEVICE_HERMES_LITE:
-  case NEW_DEVICE_HERMES_LITE2:
     //
     // Note: HL2 does not have Dither and Random.
     //       BUT: the Dither bit is hi-jacked without documentation (!)
@@ -1707,11 +1715,11 @@ void radio_start_radio(void) {
   case DEVICE_HERMES:
   case DEVICE_HERMES_LITE:
   case DEVICE_HERMES_LITE2:
+  case DEVICE_G2E:
   case NEW_DEVICE_ATLAS:
   case NEW_DEVICE_HERMES:
   case NEW_DEVICE_HERMES2:
-  case NEW_DEVICE_HERMES_LITE:
-  case NEW_DEVICE_HERMES_LITE2:
+  case NEW_DEVICE_G2E:
     //
     // If there are two MERCURY cards on the ATLAS bus, this is detected
     // in old_protocol.c, But, n_adc can keep the value of 1 since the
@@ -1730,7 +1738,7 @@ void radio_start_radio(void) {
   // "special" hardware. The choice made here will possibly overwritten
   // with data from the props file.
   //
-  if (device == DEVICE_HERMES_LITE2 || device == NEW_DEVICE_HERMES_LITE2)  {
+  if (device == DEVICE_HERMES_LITE2) {
     filter_board = N2ADR;
     n2adr_oc_settings(); // Apply default OC settings for N2ADR board
   }
@@ -1823,7 +1831,7 @@ void radio_start_radio(void) {
     launch_serptt();
   }
 #if defined (__AUTOG__)
-  if ((device == DEVICE_HERMES_LITE2 || device == NEW_DEVICE_HERMES_LITE2) && autogain_enabled) {
+  if (device == DEVICE_HERMES_LITE2 && autogain_enabled) {
     if (pthread_equal(pthread_self(), deskhpsdr_main_thread)) {
       launch_autogain_hl2();
     } else {
@@ -2424,7 +2432,7 @@ void radio_set_tune(int state) {
       radio_calc_drive_level();
       transmitter->is_tuned = 1;
 #if defined (__AUTOG__)
-      if (device == DEVICE_HERMES_LITE2 || device == NEW_DEVICE_HERMES_LITE2) {
+      if (device == DEVICE_HERMES_LITE2) {
         autogain_is_adjusted = 0;
       }
 #endif
@@ -2511,7 +2519,7 @@ void radio_calc_drive_level(void) {
     transmitter->drive_iscal = 0.9999 / transmitter->drive_scale;
     transmitter->do_scale = 1;
   }
-  if (device == DEVICE_HERMES_LITE2 || device == NEW_DEVICE_HERMES_LITE2) {
+  if (device == DEVICE_HERMES_LITE2) {
     //
     // Calculate a combination of TX attenuation (values from -7.5 to 0 dB are encoded as 0, 16, 32, ..., 240)
     // and a TX IQ scaling. If level is above 107, the scale factor will be between 0.94 and 1.00, but if
@@ -2810,6 +2818,12 @@ static void radio_restore_state(void) {
   GetPropI0("atlas_mic_source",                              atlas_mic_source);
   GetPropI0("atlas_janus",                                   atlas_janus);
   GetPropI0("hl2_audio_codec",                               hl2_audio_codec);
+  // sanity check, the props file may contain values from another version
+  if (hl2_audio_codec < HL2_CODEC_OFF || hl2_audio_codec > HL2_CODEC_SQUARESDR2 ||
+      (hl2_audio_codec == HL2_CODEC_SQUARESDR2 &&
+       (protocol != ORIGINAL_PROTOCOL || device != DEVICE_HERMES_LITE2))) {
+    hl2_audio_codec = HL2_CODEC_OFF;
+  }
   GetPropI0("hl2_cl1_input",                                 hl2_cl1_input)
   GetPropI0("anan10E",                                       anan10E);
   GetPropI0("hermes_mode",                                   hermes_mode);
@@ -2996,8 +3010,7 @@ static void radio_restore_state(void) {
   midiRestoreState();
 #endif
   t_print("%s: radio state (except receiver/transmitter) restored.\n", __func__);
-  if (pa_enabled && (device == DEVICE_HERMES_LITE || device == DEVICE_HERMES_LITE2 ||
-                     device == NEW_DEVICE_HERMES_LITE || device == NEW_DEVICE_HERMES_LITE2) &&
+  if (pa_enabled && (device == DEVICE_HERMES_LITE || device == DEVICE_HERMES_LITE2) &&
       !have_radioberry1 && !have_radioberry2 && !have_radioberry3) {
     reassign_pa_trim();
     t_print("%s: using HL2: re-assign pa_trim[]\n", __func__);
@@ -3057,6 +3070,7 @@ void radio_save_state(void) {
   //
   gtk_window_get_position(GTK_WINDOW(top_window), &window_x_pos, &window_y_pos);
   SetPropI0("backup_index",                                  backup_index);
+  SetPropS0("PGNAME",                                        PGNAME);
   char radio_mac[18];
   radio_format_mac_address(radio_mac, sizeof(radio_mac));
   SetPropS0("radio_mac",                                     radio_mac);
@@ -3091,7 +3105,7 @@ void radio_save_state(void) {
   SetPropI0("display_height",                                display_height);
   SetPropI0("full_screen",                                   full_screen);
   SetPropI0("vfo_layout",                                    vfo_layout);
-  SetPropI0("touch_ui",                          touch_ui);
+  SetPropI0("touch_ui",                                      touch_ui);
   SetPropI0("capture_max",                                   capture_max);
   SetPropI0("max_pan_label_rows",                            max_pan_label_rows);
   SetPropI0("pan_spot_lifetime_min",                         pan_spot_lifetime_min);
@@ -3286,8 +3300,8 @@ void radio_save_state(void) {
     remove_char(sec_property_path, '-');
     char sec_radioname[128];
     g_strlcpy(sec_radioname, radio->name, sizeof(sec_radioname));
-    remove_char(sec_radioname, ' ');
-    snprintf(property_path_bak, sizeof(property_path_bak), "bak_%s_%d_%s_%s", sec_radioname, (int) backup_index,
+    replace_char(sec_radioname, ' ', '_');
+    snprintf(property_path_bak, sizeof(property_path_bak), "bak_%d_%s_%s_%s", (int) backup_index, sec_radioname,
              inet_ntoa(radio->info.network.address.sin_addr), sec_property_path);
     sanitize_filename(property_path_bak);
     saveProperties(property_path_bak);
@@ -3359,8 +3373,6 @@ int radio_max_band(void) {
   switch (device) {
   case DEVICE_HERMES_LITE:
   case DEVICE_HERMES_LITE2:
-  case NEW_DEVICE_HERMES_LITE:
-  case NEW_DEVICE_HERMES_LITE2:
     max = band10;
     break;
   default:

@@ -450,6 +450,19 @@ void remove_char(char *str, char remove) {
   *dst = '\0';
 }
 
+// replace_char(str, ' ', '_');
+void replace_char(char *str, char find, char replace) {
+  if (str == NULL) {
+    return;
+  }
+  while (*str != '\0') {
+    if (*str == find) {
+      *str = replace;
+    }
+    str++;
+  }
+}
+
 void sanitize_filename(char *str) {
   size_t i;
   for (i = 0; str[i] != '\0'; i++) {
@@ -474,56 +487,97 @@ const char *extract_short_msg(const char *msg) {
   return s;
 }
 
-static const TRANSMITTER *tx_ctx;
-
-static int cmp_cfc_idx(const void *xa, const void *xb) {
-  int i = * (const int *) xa;
-  int j = * (const int *) xb;
-  return (tx_ctx->cfc_freq[i] > tx_ctx->cfc_freq[j]) -
-         (tx_ctx->cfc_freq[i] < tx_ctx->cfc_freq[j]);
-}
-
-static int cmp_tx_eq_idx(const void *xa, const void *xb) {
-  int i = * (const int *) xa;
-  int j = * (const int *) xb;
-  return (tx_ctx->eq_freq[i] > tx_ctx->eq_freq[j]) -
-         (tx_ctx->eq_freq[i] < tx_ctx->eq_freq[j]);
+void sort_cfc_profile(double *freq, double *level, double *post,
+                      double *comp_weight, double *post_weight) {
+  int idx[N_CFC];
+  for (int k = 0; k < N_CFC; k++) { idx[k] = k + 1; }
+  for (int a = 0; a < N_CFC - 1; a++) {
+    for (int b = a + 1; b < N_CFC; b++) {
+      if (freq[idx[a]] > freq[idx[b]]) {
+        int tmp = idx[a];
+        idx[a] = idx[b];
+        idx[b] = tmp;
+      }
+    }
+  }
+  double f[N_CFC + 1], l[N_CFC + 1], p[N_CFC + 1];
+  double cw[N_CFC], pw[N_CFC];
+  for (int k = 1; k <= N_CFC; k++) {
+    int i = idx[k - 1];
+    f[k] = freq[i];
+    l[k] = level[i];
+    p[k] = post[i];
+    cw[k - 1] = comp_weight[i - 1];
+    pw[k - 1] = post_weight[i - 1];
+  }
+  for (int k = 1; k <= N_CFC; k++) {
+    freq[k] = f[k];
+    level[k] = l[k];
+    post[k] = p[k];
+    comp_weight[k - 1] = cw[k - 1];
+    post_weight[k - 1] = pw[k - 1];
+  }
 }
 
 void sort_cfc(TRANSMITTER *tx) {
-  int idx[N_CFC];
-  tx_ctx = tx;
-  for (int k = 0; k < N_CFC; k++) { idx[k] = k + 1; }
-  qsort(idx, N_CFC, sizeof(int), cmp_cfc_idx);
-  float f[N_CFC + 1], l[N_CFC + 1], p[N_CFC + 1];
-  for (int k = 1; k <= N_CFC; k++) {
-    int i = idx[k - 1];
-    f[k] = tx->cfc_freq[i];
-    l[k] = tx->cfc_lvl[i];
-    p[k] = tx->cfc_post[i];
-  }
-  for (int k = 1; k <= N_CFC; k++) {
-    tx->cfc_freq[k] = f[k];
-    tx->cfc_lvl[k]  = l[k];
-    tx->cfc_post[k] = p[k];
-  }
+  sort_cfc_profile(tx->cfc_freq, tx->cfc_lvl, tx->cfc_post,
+                   tx->cfc_comp_weight, tx->cfc_post_weight);
   t_print("%s: CFC_FREQ sorted\n", __func__);
 }
 
-void sort_tx_eq(TRANSMITTER *tx) {
+void sort_eq_profile(double *freq, double *gain, double *weight) {
   int idx[N_EQ];
-  tx_ctx = tx;
   for (int k = 0; k < N_EQ; k++) { idx[k] = k + 1; }
-  qsort(idx, N_EQ, sizeof(int), cmp_tx_eq_idx);
-  float f[N_EQ + 1], g[N_EQ + 1]; // 1-basiert
+  for (int a = 0; a < N_EQ - 1; a++) {
+    for (int b = a + 1; b < N_EQ; b++) {
+      if (freq[idx[a]] > freq[idx[b]]) {
+        int tmp = idx[a];
+        idx[a] = idx[b];
+        idx[b] = tmp;
+      }
+    }
+  }
+  double f[N_EQ + 1], g[N_EQ + 1], w[N_EQ];
   for (int k = 1; k <= N_EQ; k++) {
     int i = idx[k - 1];
-    f[k] = tx->eq_freq[i];
-    g[k] = tx->eq_gain[i];
+    f[k] = freq[i];
+    g[k] = gain[i];
+    w[k - 1] = weight[i - 1];
   }
   for (int k = 1; k <= N_EQ; k++) {
-    tx->eq_freq[k] = f[k];
-    tx->eq_gain[k] = g[k];
+    freq[k] = f[k];
+    gain[k] = g[k];
+    weight[k - 1] = w[k - 1];
   }
-  t_print("%s: TX_EQ_FREQ sorted\n", __func__);
+  /*
+   * Keep loaded/legacy profiles valid for both the graphical editor and
+   * WDSP's linear interpolator.  The UI uses 10 Hz .. 16 kHz and requires
+   * neighbouring control points to be at least 10 Hz apart.
+   */
+  const double min_freq = 10.0;
+  const double max_freq = 16000.0;
+  const double min_spacing = 10.0;
+  for (int k = 1; k <= N_EQ; k++) {
+    if (freq[k] < min_freq) { freq[k] = min_freq; }
+    if (freq[k] > max_freq) { freq[k] = max_freq; }
+  }
+  for (int k = 2; k <= N_EQ; k++) {
+    double min_allowed = freq[k - 1] + min_spacing;
+    if (freq[k] < min_allowed) { freq[k] = min_allowed; }
+  }
+  if (freq[N_EQ] > max_freq) {
+    freq[N_EQ] = max_freq;
+    for (int k = N_EQ - 1; k >= 1; k--) {
+      double max_allowed = freq[k + 1] - min_spacing;
+      if (freq[k] > max_allowed) { freq[k] = max_allowed; }
+    }
+  }
+}
+
+void sort_tx_eq(TRANSMITTER *tx) {
+  sort_eq_profile(tx->eq_freq, tx->eq_gain, tx->eq_weight);
+}
+
+void sort_rx_eq(RECEIVER *rx) {
+  sort_eq_profile(rx->eq_freq, rx->eq_gain, rx->eq_weight);
 }

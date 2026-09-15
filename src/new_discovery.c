@@ -339,19 +339,17 @@ gpointer new_discover_receive_thread(gpointer data) {
               frequency_max = 61440000.0;
               break;
             case NEW_DEVICE_SATURN:
+            case NEW_DEVICE_SATURN2:
+              discovered[devices].device = NEW_DEVICE_SATURN;
               g_strlcpy(discovered[devices].name, "Saturn/G2", sizeof(discovered[devices].name));
               frequency_min = 0.0;
               frequency_max = 61440000.0;
               break;
-            case NEW_DEVICE_HERMES_LITE:
-              if (discovered[devices].software_version < 40) {
-                g_strlcpy(discovered[devices].name, "Hermes Lite V1", sizeof(discovered[devices].name));
-              } else {
-                g_strlcpy(discovered[devices].name, "Hermes Lite V2", sizeof(discovered[devices].name));
-                discovered[devices].device = NEW_DEVICE_HERMES_LITE2;
-              }
+            case NEW_DEVICE_G2E:
+              discovered[devices].device = NEW_DEVICE_G2E;
+              g_strlcpy(discovered[devices].name, "Anan G2E", sizeof(discovered[devices].name));
               frequency_min = 0.0;
-              frequency_max = 30720000.0;
+              frequency_max = 61440000.0;
               break;
             default:
               g_strlcpy(discovered[devices].name, "Unknown", sizeof(discovered[devices].name));
