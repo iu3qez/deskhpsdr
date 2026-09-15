@@ -38,17 +38,34 @@ Il `master` locale e' rimasto indietro a `2bbe760` e diverge da `origin/master`.
 - `make tci-spectrum-test`: 3544 controlli, 0 falliti, prima e dopo il merge.
 - **Bind address provato sul banco con la radio accesa.** Con `tci_bind_addr=127.0.0.1` il socket e' `TCP 127.0.0.1:40001 (LISTEN)` e non `*:40001`; connessione a `127.0.0.1:40001` riuscita, a `192.168.1.199:40001` rifiutata. Il log mostra la transizione da `all interfaces` a `127.0.0.1`. Persistenza nel props verificata. L'operatore ha confermato provato anche il resto: icona di avviso e campo rigctl.
 
+### Sessione di banco del 2026-09-10
+
+Prima di iniziare, due ore perse su un falso allarme che vale la pena non ripetere: `rx_att_ex` e `band_ex` andavano in timeout perche' il binario in esecuzione era quello del **checkout principale**, compilato il 5 settembre e privo di ogni estensione. Il sorgente era gia' riallineato, il binario no. Verificare sempre con `lsof -p <pid> -a -d txt` quale eseguibile stia davvero girando.
+
+- **`rx_att_ex` chiuso.** Interrogazione, scrittura e lettura su due ADC distinti. Con RX1 su ADC0 e RX2 su ADC1 i due receiver riportano valori di attenuazione **diversi**, il che dimostra che il comando legge lo stato per ADC e non uno globale. Portando entrambi i receiver su ADC0 riportano lo stesso valore, come atteso. Range 0..31 passo 1, `kind=att`, nessun gain: coerente con le schede Orion/Angelia.
+- **`band_ex`** verificato in interrogazione e in cambio banda. Manca solo la variante `--next` sul band stack.
+- **Base del carico a due receiver**, binario nuovo, entrambi i panadapter attivi, 30 fps configurati:
+
+| | load | avg |
+|---|---|---|
+| RX1 | 18,6 - 18,9 % | 6,21 - 6,31 ms |
+| RX2 | 16,5 - 17,5 % | 5,50 - 5,84 ms |
+
+Somma intorno al 35-36 %, `late` a zero su tutte le finestre. **Attenzione:** `load` e' per receiver, le due righe vanno sommate perche' entrambi i callback girano sulla stessa main loop GTK. E `rendered` non conta i disegni ma le volte che `rx_get_pixels()` ha restituito dati: con panadapter e cascata spenti su un receiver, quel receiver costa 0,29 ms e `rendered` resta alto lo stesso.
+
+Un'osservazione utile per misure future: con panadapter e cascata spenti su RX2, il costo del nostro produttore si legge quasi puro, perche' il rumore di fondo scende da 6 ms a 0,29. Con i disegni accesi lo stesso incremento resta annegato.
+
 ## Verifiche ancora mancanti (servono la radio o l'host Linux)
 
-Invariate rispetto al handoff precedente, tranne il punto sul bind che e' stato chiuso:
+Chiusi il bind address e `rx_att_ex`. Restano:
 
-1. Confronto traccia locale contro bin ricevuti a zoom 1, stesso floor entro 1 dB.
-2. `display_debug` con due receiver e un client iscritto: `load` entro il 10 % in piu'.
+1. Confronto traccia locale contro bin ricevuti a zoom 1, stesso floor entro 1 dB. **Non ancora tentato: la sottoscrizione allo spettro non e' mai partita.**
+2. `display_debug` con due receiver e un client iscritto: `load` entro il 10 % in piu' della somma 35-36 % misurata come base.
+2b. `band_ex` con `--next`, l'unica parte del comando non provata.
 3. WAN simulata su host Linux con `netem` a 60 ms, 2 % di perdita, 32 kbit/s, per 30 minuti: `spectrum_fps` scende a 5 e risale.
 4. Sessione con `-fsanitize=address`: connessioni e disconnessioni ripetute con lo spettro iscritto. Resta la finestra use-after-close preesistente del pattern `tci_clients_snapshot()`, allargata dal produttore.
 5. Ricompilazione locale di libwebsockets con le extension e verifica della banda con deflate: 512 bin a 10 fps sotto i 15 kbit/s.
 6. Regressione con client stock: Thetis per 10 minuti con audio e IQ senza vedere un frame `type=4`.
-7. `rx_att_ex` e `band_ex` sul banco con la sonda.
 
 ## Rischi residui noti
 
@@ -56,6 +73,62 @@ Invariate rispetto al handoff precedente, tranne il punto sul bind che e' stato 
 - `src/tci.c` sfiora le 7300 righe; le quindici array per receiver in `CLIENT` vorrebbero essere una struct.
 - `spectrum_start` durante una pausa del display puo' leggere `displaying` fuori mutex. Corsa stretta, effetto: stato 1 e poi 0.
 - Il Makefile non traccia le dipendenze dagli header: dopo un merge che tocca un `.h` serve `make clean && make`, altrimenti oggetti compilati contro un layout di struct vecchio.
+
+## Aperto e NON bloccante: le misure su loopback dello stream a bin
+
+Deciso il 2026-09-10 di rimandare. I punti 1 e 2 delle verifiche mancanti, cioe' il confronto del floor e il delta di carico con un client sottoscritto, si eseguono in sessanta secondi su loopback e sono stati giudicati **microtest poco significativi**: misurano un percorso senza latenza, senza perdita e senza un client vero, cioe' tre condizioni che non somigliano a niente di quello per cui il progetto esiste.
+
+La verifica che conta e' quella end-to-end: il fork TOTW che consuma lo stream su un link WAN reale dentro WireGuard. Quella esercita in una volta sola il formato del frame, la scala fps sotto saturazione, la banda con deflate e il comportamento del client, e lo fa nelle condizioni d'uso. Le misure su loopback andranno fatte allora, come base di confronto, non prima e non da sole.
+
+Nessuna delle unita' del piano client dipende da queste misure, quindi lo sviluppo del client puo' partire. Restano da fare, non da dimenticare:
+
+- confronto del floor fra traccia locale e bin ricevuti;
+- delta di carico con un client sottoscritto, contro la base 18,6 % piu' 17,9 % gia' misurata;
+- banda effettiva, il cui valore atteso senza deflate e' 608 byte a frame per 10 frame, cioe' 48,6 kbit/s;
+- continuita' della sequenza, che su loopback deve avere zero salti;
+- `band_ex` con `--next`.
+
+Nota operativa: il fork `iu3qez/deskhpsdr` ha le issue disabilitate su GitHub, quindi non esiste un tracker dove depositare voci come questa. Finche' resta cosi', questo handoff e' il tracker.
+
+## Debiti di funzionalita' di deskHPSDR
+
+Emersi lavorando, non sono nostri e non sono stati corretti tranne dove indicato. Hanno tutti la stessa forma: **il componente fallisce verso il silenzio invece che verso l'errore**, e l'operatore non ha modo di distinguere "non funziona" da "non c'e'".
+
+1. **Il pannello P2 ADC/DDC e' mostrato su radio dove non ha effetto.** Il pulsante compare per qualsiasi dispositivo in protocollo 2, l'unica condizione in `new_menu.c` e' `protocol == NEW_PROTOCOL`. Ma `p2_receiver_adc_assignment()` in `new_protocol.c` applica la matrice **solo** per `NEW_DEVICE_HERMES` e `NEW_DEVICE_ANGELIA`. Su Orion, Orion2, Saturn e G2 la funzione viene chiamata con indice DDC negativo, salta la matrice e usa `receiver[i]->adc`. Quindi su quelle radio si puo' configurare l'intero pannello senza che cambi nulla, e la nota interna avverte solo che Hermes ha un ADC solo. Il posto giusto e' il menu Receive, voce "Select ADC", che infatti compare proprio quando la matrice **non** e' onorata.
+
+   Corollario da ricordare: l'indice DDC non e' l'indice del receiver. Su Angelia, Orion, Orion2 e Saturn `receiver[i]` sta su **DDC(i+2)**; solo su Hermes vale DDC(i). E due receiver non possono condividere un DDC: cio' che si condivide e' l'ADC.
+
+2. **TCI ignora in silenzio i comandi che non conosce.** Non esiste una risposta di errore per comando sconosciuto: la traccia c'e' solo nel log del server e solo con `rigctl_debug` acceso. La casella "Enable TCI Debug" del menu accende `tci_debug`, che e' un flag diverso e non stampa i comandi ricevuti. E' quello che ha reso difficile capire che stava girando un binario vecchio.
+
+3. **Una build vecchia cancella dal props le chiavi che non conosce.** `radio_save_state()` fa `clearProperties()` e riscrive solo le chiavi note al binario. Avviare una build precedente su una configurazione nuova ne distrugge le impostazioni all'uscita, senza avviso. E' successo davvero: `tci_bind_addr` e' sparito dal props.
+
+4. **libwebsockets non apriva il listener mentre il programma dichiarava di essere partito.** Gia' corretto in `4e9e6d7` con `LWS_SERVER_OPTION_FAIL_UPON_UNABLE_TO_BIND`. Resta qui come quarto esemplare della stessa famiglia.
+
+## Issue upstream da tenere d'occhio
+
+**`dl1bz/deskhpsdr` #203, "Audio stuttering, bit/sample rate issue maybe?"** — aperta, etichettata Bug / using macOS / Under active investigation, aggiornata il 2026-09-10. Clic e scoppiettii in RX e TX su macOS Tahoe, ANAN 7000 DLE mkII in protocollo 2, con il sistema a 48 k. Ci riguarda per tre motivi: e' la stessa piattaforma e lo stesso protocollo del nostro banco, il merge che abbiamo appena assorbito contiene `9a8172f` "Improve CoreAudio microphone buffer drift handling" che potrebbe essere il lavoro in corso su questa issue, e se durante il bench si sentono clic nell'audio **il primo sospettato non e' il nostro codice**.
+
+**`n9bc/thetis-on-the-web`**, nove issue aperte, tre pertinenti al piano del client:
+
+- **#8, "https server required for PTT function"**: conferma dall'utenza che il requisito CLI-09, cioe' l'unita' C8, e' un bisogno gia' segnalato e non una nostra aggiunta teorica.
+- **#9, "RX audio lags"**: il ritardo audio peggiora progressivamente e si azzera solo spegnendo e riaccendendo l'audio RX. E' lo scheduler naive gia' descritto nei requisiti. Il nostro piano **non** lo affronta, perche' CLI-08 e' fuori scopo con DEC-01 = A. Il fork eredita il problema.
+- **#12, "There is some humming sound in the CW carriers"**: **confermato leggendo il sorgente di Thetis**, non piu' un'ipotesi. `buildStreamPayload()` in `Project Files/Source/Console/TCIServer.cs` di `ramdor/Thetis` alloca 64 byte piu' payload, scrive otto `uint32` (receiver, sample rate, tipo di campione, zero, zero, lunghezza, tipo di stream, canali) seguiti da otto parole di riserva, e copia i campioni a partire da offset 64. E' lo stesso identico layout della nostra `TCI_STREAM_HEADER`, campo per campo.
+
+  Quindi l'header "non standard da 8 byte" che il commento di TOTW dichiara ricavato per via sperimentale **non esiste**: sono i primi otto byte dell'header standard letti con un layout inventato, che combacia solo perche' il receiver 0 riempie di zeri i posti giusti. TOTW suona da offset 8 anche i frame di Thetis, quindi si porta 56 byte di header nel flusso audio. Quei byte sono interi piccoli e zeri: letti come `float32` sono denormali, cioe' silenzio, quindi l'artefatto e' un buco periodico e non rumore. La dissolvenza di 64 campioni ai bordi di ogni buffer, che nel sorgente di TOTW e' commentata come rimedio ai clic, lo ammorbidisce in una modulazione di ampiezza a 93,75 Hz: un ronzio, udibile soprattutto su una portante CW stabile.
+
+  Conseguenza: l'unita' C1 del piano client non e' solo compatibilita' con deskHPSDR, ripara TOTW anche contro Thetis. Ed e' materiale solido per aprire un dialogo con n9bc, perche' gli si porta una diagnosi con i riferimenti al suo sorgente e a quello di Thetis.
+
+  Lezione di metodo: la risposta stava in venti righe di codice pubblico, e per due volte in questa vicenda, prima dall'autore di TOTW e poi da me, e' stata sostituita da una deduzione.
+
+## La priorita' audio non morde nella configurazione scelta
+
+La specifica avverte al paragrafo 2.4 che lo slot dello spettro e' subordinato alla FIFO, quindi con audio TCI attivo su un link saturo lo spettro resta affamato. E' il rilievo #5 della code review, accettato come progettato.
+
+Quell'avvertimento resta vero come regola, ma **nella configurazione WAN scelta non si applica**. Su WAN l'audio va su Mumble (DEC-01 = A), quindi il client browser non manda mai `audio_start`; in modalita' a bin non chiede nemmeno l'IQ. Nella FIFO restano solo le risposte testuali ai comandi, sporadiche e minuscole, e lo slot dello spettro viene servito quasi a ogni ciclo.
+
+Vale la pena saperlo perche' chi legge la specifica fra sei mesi trova un avvertimento severo senza il contesto che lo disinnesca. Torna a mordere solo se qualcuno riattiva l'audio o l'IQ su TCI sopra un link stretto.
+
+Da qui anche la conferma che Opus non entra mai nel nostro codice: Mumble lo usa al suo interno, ma su un trasporto separato in UDP con il suo FEC. Nel nostro header audio `format` vale `FLOAT32` e `codec` resta zero, cioe' PCM non compresso. Ed e' proprio per questo che l'errore di offset descritto sopra e' udibile: con PCM grezzo qualunque sequenza di byte e' audio valido, mentre un codec avrebbe scartato il frame con un errore diagnosticabile.
 
 ## Come riprendere
 
