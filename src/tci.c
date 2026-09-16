@@ -267,6 +267,12 @@ typedef enum {
 } TCI_TX_OWNER_MODE;
 
 static TCI_TX_OWNER_MODE tci_tx_owner_mode = TCI_TX_OWNER_NONE;
+//
+// MOX/TUNE ON requests the TCI thread has queued on the main loop and the main
+// loop has not applied yet. While one is pending the radio is not transmitting
+// by design, so this is not a local release. Protected by tci_mutex.
+//
+static int tci_tx_on_pending = 0;
 
 typedef enum {
   TCI_SET_LOCK_RIT,
@@ -2629,7 +2635,13 @@ static void tci_tx_owner_sync_local_state(void) {
   TCI_TX_OWNER_MODE owner_mode = TCI_TX_OWNER_NONE;
   int clear_owner = 0;
   g_mutex_lock(&tci_mutex);
-  if (tci_tx_owner != NULL) {
+  //
+  // An owner whose ON is still queued on the main loop is not transmitting yet.
+  // Reading that as a local release dropped the ownership, the queued ON then
+  // keyed the radio anyway, and every later TCI RX request was refused as
+  // "TX controlled locally": a quick PTT tap left the radio stuck in TX.
+  //
+  if (tci_tx_owner != NULL && tci_tx_on_pending == 0) {
     if (tci_tx_owner_mode == TCI_TX_OWNER_MOX && !radio_is_transmitting()) {
       clear_owner = 1;
     } else if (tci_tx_owner_mode == TCI_TX_OWNER_TUNE && !tune) {
@@ -2652,6 +2664,55 @@ static void tci_tx_owner_sync_local_state(void) {
             owner->seq,
             owner_mode == TCI_TX_OWNER_TUNE ? "TUNE" : "TX");
   }
+}
+
+//
+// Main-loop half of a TCI MOX/TUNE ON request, queued by tci_cmd_trx() and
+// tci_cmd_tune() after they took the ownership. Idle sources run behind the
+// timeouts, so the RX request of a quick tap can be handled before this.
+//
+// The ON is applied only while it still means something: the ownership it was
+// queued for exists and, for MOX, its owner has not asked for RX in the
+// meantime. Applied after that RX request, the ON would be taken by the drain
+// for a foreign PTT source, which releases the ownership without forcing RX.
+//
+// The pending mark is removed only after the radio state has been written, so
+// the TCI thread never sees an owner, a radio not transmitting and nothing
+// pending at the same time.
+//
+static gboolean tci_apply_owner_on(TCI_TX_OWNER_MODE mode) {
+  int apply;
+  g_mutex_lock(&tci_mutex);
+  apply = tci_tx_owner != NULL && tci_tx_owner_mode == mode &&
+          (mode != TCI_TX_OWNER_MOX ||
+           tci_tx_owner->tx_clear_stage == TCI_TX_CLEAR_NONE);
+  g_mutex_unlock(&tci_mutex);
+  if (apply) {
+    if (mode == TCI_TX_OWNER_TUNE) {
+      ext_tune_update(GINT_TO_POINTER(1));
+    } else {
+      ext_mox_update(GINT_TO_POINTER(1));
+    }
+  } else {
+    t_print("TCI %s request dropped before it was applied, already released\n",
+            mode == TCI_TX_OWNER_TUNE ? "TUNE" : "TX");
+  }
+  g_mutex_lock(&tci_mutex);
+  if (tci_tx_on_pending > 0) {
+    tci_tx_on_pending--;
+  }
+  g_mutex_unlock(&tci_mutex);
+  return G_SOURCE_REMOVE;
+}
+
+static gboolean tci_apply_owner_mox_on(gpointer data) {
+  (void) data;
+  return tci_apply_owner_on(TCI_TX_OWNER_MOX);
+}
+
+static gboolean tci_apply_owner_tune_on(gpointer data) {
+  (void) data;
+  return tci_apply_owner_on(TCI_TX_OWNER_TUNE);
 }
 
 static void tci_broadcast_digu_offset(void) {
@@ -4492,7 +4553,10 @@ static void tci_cmd_trx(CLIENT *client, const TCI_CMD *cmd) {
           t_print("TCI%d TX request\n", client->seq);
         }
       }
-      g_idle_add(ext_mox_update, GINT_TO_POINTER(1));
+      g_mutex_lock(&tci_mutex);
+      tci_tx_on_pending++;
+      g_mutex_unlock(&tci_mutex);
+      g_idle_add(tci_apply_owner_mox_on, NULL);
       tci_schedule_fast_mox_report(1);
     } else if (owner_request) {
       int already_pending;
@@ -4570,7 +4634,14 @@ static void tci_cmd_tune(CLIENT *client, const TCI_CMD *cmd) {
       tci_send_mox(client);
       return;
     }
-    g_idle_add(ext_tune_update, GINT_TO_POINTER(state));
+    if (state) {
+      g_mutex_lock(&tci_mutex);
+      tci_tx_on_pending++;
+      g_mutex_unlock(&tci_mutex);
+      g_idle_add(tci_apply_owner_tune_on, NULL);
+    } else {
+      g_idle_add(ext_tune_update, GINT_TO_POINTER(0));
+    }
     t_print("TCI%d TUNE request=%d\n", client->seq, state);
   } else {
     tci_send_tune(client);
