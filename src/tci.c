@@ -6650,8 +6650,9 @@ static void tci_handle_text(CLIENT *client, char *msg) {
     client->unknown_cmd_count++;
 
     if (client->unknown_cmd_count <= 10 || (client->unknown_cmd_count % 100) == 0) {
-      t_print("TCI%d unknown command (%" G_GUINT64_FORMAT " so far, no answer is possible): %s\n",
-              client->seq, client->unknown_cmd_count, cmd.cmd ? cmd.cmd : "(null)");
+      t_print("TCI%d unknown command (%llu so far, no answer is possible): %s\n",
+              client->seq, (unsigned long long) client->unknown_cmd_count,
+              cmd.cmd ? cmd.cmd : "(null)");
     }
   }
 }
