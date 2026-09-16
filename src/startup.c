@@ -62,6 +62,61 @@
 
 char workdir[PATH_MAX];
 
+//
+// Number of previous runs kept beside the current one, as deskhpsdr.log.1 and
+// so on. Raise it if you restart several times before noticing a problem,
+// lower it if the logs get big, which they do with the debug options on.
+//
+#define LOG_GENERATIONS 5
+
+//
+// Rotate a log instead of truncating it.
+//
+// stdout and stderr used to be reopened with "w", so every start erased the
+// log of the run before it. That is precisely the run worth reading: a fault
+// is noticed after the restart that destroys the evidence of it, and the
+// comment below still calls these files post-mortem debugging.
+//
+// The oldest generation is dropped, the others shift up by one, and the run
+// that just ended becomes .1. Nothing here can fail in a way worth reporting,
+// and there is no way to report it anyway: stdout is not connected yet.
+//
+static void rotate_logfile(const char *name) {
+  char from[PATH_MAX];
+  char to[PATH_MAX];
+  struct stat statbuf;
+
+  if (stat(name, &statbuf) < 0) {
+    return;                          // no log from a previous run
+  }
+
+  snprintf(to, sizeof(to), "%s.%d", name, LOG_GENERATIONS);
+  (void) remove(to);
+
+  for (int i = LOG_GENERATIONS - 1; i >= 1; i--) {
+    snprintf(from, sizeof(from), "%s.%d", name, i);
+    snprintf(to, sizeof(to), "%s.%d", name, i + 1);
+    (void) rename(from, to);         // fails harmlessly when .i does not exist
+  }
+
+  snprintf(to, sizeof(to), "%s.1", name);
+  (void) rename(name, to);
+}
+
+static void reopen_logfile(const char *name, FILE *stream) {
+  rotate_logfile(name);
+
+  //
+  // Nothing to do if this fails, and no way to say so: the stream is gone
+  // either way and there is no output channel left to complain through.
+  // Assigning the result is what keeps freopen's warn_unused_result quiet,
+  // a cast to void does not.
+  //
+  if (freopen(name, "w", stream) == NULL) {
+    return;
+  }
+}
+
 void startup(const char *path) {
   struct stat statbuf;
   int rc;
@@ -112,9 +167,11 @@ void startup(const char *path) {
     if (chdir(workdir) != 0) {
       t_print("%s: Could not chdir to working dir %s\n", __func__, workdir);
     } else {
-      (void) freopen("deskhpsdr.log", "w", stdout);
-      (void) freopen("deskhpsdr.err", "w", stderr);
+      reopen_logfile("deskhpsdr.log", stdout);
+      reopen_logfile("deskhpsdr.err", stderr);
       t_print("%s: working dir changed to %s\n", __func__, workdir);
+      t_print("%s: previous log kept as deskhpsdr.log.1 (up to %d generations)\n",
+              __func__, LOG_GENERATIONS);
     }
     return;
   }
@@ -157,7 +214,9 @@ void startup(const char *path) {
   //  Make two local files for stdout and stderr, to allow
   //  post-mortem debugging
   //
-  (void) freopen("deskhpsdr.log", "w", stdout);
-  (void) freopen("deskhpsdr.err", "w", stderr);
+  reopen_logfile("deskhpsdr.log", stdout);
+  reopen_logfile("deskhpsdr.err", stderr);
   t_print("%s: working dir changed to %s\n", __func__, workdir);
+  t_print("%s: previous log kept as deskhpsdr.log.1 (up to %d generations)\n",
+          __func__, LOG_GENERATIONS);
 }

@@ -1,6 +1,7 @@
 GNUmakefile
 *.aux
 *.log
+*.log.[0-9]
 *.toc
 *.o
 *.d
