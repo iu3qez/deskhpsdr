@@ -3,6 +3,7 @@ GNUmakefile
 *.log
 *.toc
 *.o
+*.d
 *.diff
 *.rej
 *.orig
