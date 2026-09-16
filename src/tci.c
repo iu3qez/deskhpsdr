@@ -3999,7 +3999,29 @@ static long long tci_ll(const char *s, long long def) {
 
 
 static int tci_apply_split_update(void *data) {
-  int state = GPOINTER_TO_INT(data) ? 1 : 0;
+  //
+  // split_enable is absolute in TCI: true means "TX on VFO B", which is also
+  // what tci_send_split() answers. The deskHPSDR flag is relative: it means
+  // "TX on the VFO the active receiver is not on", so vfo_get_tx_vfo()
+  // returns active_receiver->id, inverted when split is set.
+  //
+  // The two readings agree only while RX1 is the active receiver. With RX2
+  // active, writing the received boolean straight into split puts the TX on
+  // the other VFO than the one asked for, and the answer then reads back
+  // inverted: split_enable:0,true; was answered with split_enable:0,false;
+  //
+  //   active RX   requested TX VFO   split
+  //   RX1 (id 0)  VFO A              0
+  //   RX1 (id 0)  VFO B              1
+  //   RX2 (id 1)  VFO A              1
+  //   RX2 (id 1)  VFO B              0
+  //
+  // So keep the absolute reading, which is the one the protocol and the
+  // answer use, and derive the flag that puts the TX where the client asked.
+  //
+  int want_tx_vfo = GPOINTER_TO_INT(data) ? VFO_B : VFO_A;
+  int active_vfo = (active_receiver != NULL) ? active_receiver->id : VFO_A;
+  int state = (want_tx_vfo != active_vfo) ? 1 : 0;
   tci_begin_apply();
   radio_set_split(state);
   update_slider_split_btn();
