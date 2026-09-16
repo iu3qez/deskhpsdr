@@ -2731,6 +2731,12 @@ static void radio_restore_state(void) {
             __func__, property_path, check_device_id, device);
     clearProperties();
   }
+
+  //
+  // Remember what the props file contained, so that keys this build does not
+  // know about are written back instead of being dropped on the next save.
+  //
+  t_print("%s: %d keys remembered for write-back\n", __func__, snapshotProperties());
   //
   // For consistency, all variables should get default values HERE,
   // but this is too much for the moment.
@@ -3292,6 +3298,13 @@ void radio_save_state(void) {
 #ifdef MIDI
   midiSaveState();
 #endif
+  {
+    int kept = restoreUnknownProperties();
+
+    if (kept > 0) {
+      t_print("%s: %d unknown keys preserved from the loaded props\n", __func__, kept);
+    }
+  }
   saveProperties(property_path);
   sync();
   if (radio && radio->name[0] != '\0' && (protocol == ORIGINAL_PROTOCOL || protocol == NEW_PROTOCOL) && backup_unlock) {

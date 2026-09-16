@@ -1060,6 +1060,27 @@ tci-spectrum-test:
 	./tci_spectrum_test
 	@rm -f tci_spectrum_test
 
+#############################################################################
+#
+#  Harness for the props file handling. Needs GTK because property.c uses
+#  GLib, but nothing else of deskHPSDR.
+#
+#############################################################################
+
+.PHONY:	property-test
+property-test:
+	$(CC) -std=gnu11 -Wall -Wextra -I./src $(GTK_INCLUDE) -o property_test tests/property_test.c src/property.c $(GTK_LIBS)
+	./property_test
+	@rm -f property_test
+
+#############################################################################
+#
+#  Run every standalone test harness.
+#
+#############################################################################
+
+.PHONY:	test
+test:	tci-spectrum-test property-test
 
 #############################################################################
 #

@@ -31,15 +31,120 @@
 
 PROPERTY *properties = NULL;
 
-void clearProperties(void) {
+//
+// Snapshot of the properties as they were read from the props file, taken
+// explicitly by the owner of that file (see snapshotProperties()).
+// It is what allows restoreUnknownProperties() to put back the keys that
+// this binary does not know about, instead of dropping them on save.
+//
+static PROPERTY *snapshot = NULL;
+
+static void free_property_list(PROPERTY *property) {
   PROPERTY *next;
-  while (properties != NULL) {
-    next = properties->next_property;
-    g_free(properties->name);
-    g_free(properties->value);
-    g_free(properties);
-    properties = next;
+
+  while (property != NULL) {
+    next = property->next_property;
+    g_free(property->name);
+    g_free(property->value);
+    g_free(property);
+    property = next;
   }
+}
+
+void clearProperties(void) {
+  free_property_list(properties);
+  properties = NULL;
+}
+
+/* --------------------------------------------------------------------------*/
+/**
+* @brief Forget the snapshot taken by snapshotProperties()
+*/
+void clearPropertiesSnapshot(void) {
+  free_property_list(snapshot);
+  snapshot = NULL;
+}
+
+/* --------------------------------------------------------------------------*/
+/**
+* @brief Remember the properties currently in memory
+*
+* To be called right after loadProperties() by the code that owns the props
+* file, so that keys unknown to this binary survive the clearProperties() that
+* precedes writing the file back. "property_version" is deliberately left out,
+* saveProperties() always writes the version of the running binary.
+*
+* @return number of keys remembered
+*/
+int snapshotProperties(void) {
+  PROPERTY *property;
+  PROPERTY *copy;
+  int count = 0;
+  clearPropertiesSnapshot();
+  property = properties;
+
+  while (property) {
+    if (strcmp(property->name, "property_version") != 0) {
+      copy = malloc(sizeof(PROPERTY));
+      copy->name = g_strdup(property->name);
+      copy->value = g_strdup(property->value);
+      copy->next_property = snapshot;
+      snapshot = copy;
+      count++;
+    }
+
+    property = property->next_property;
+  }
+
+  return count;
+}
+
+/* --------------------------------------------------------------------------*/
+/**
+* @brief Put back the snapshot keys that nobody has written in this save pass
+*
+* Called just before saveProperties(), after all SetProp* calls. A key that the
+* running binary does write is left alone, only the ones it does not know about
+* are restored. Without this, starting an older build on a newer config file
+* silently destroys every setting that build does not know.
+*
+* @return number of keys restored
+*/
+int restoreUnknownProperties(void) {
+  PROPERTY *property;
+  GHashTable *known;
+  int count = 0;
+
+  if (snapshot == NULL) {
+    return 0;
+  }
+
+  //
+  // getProperty() is a linear scan, so doing it once per snapshot entry is
+  // quadratic on a props file of a few thousand keys. Index the current names
+  // instead: the hash table only borrows the name pointers, it owns nothing.
+  //
+  known = g_hash_table_new(g_str_hash, g_str_equal);
+  property = properties;
+
+  while (property) {
+    g_hash_table_add(known, property->name);
+    property = property->next_property;
+  }
+
+  property = snapshot;
+
+  while (property) {
+    if (!g_hash_table_contains(known, property->name)) {
+      setProperty(property->name, property->value);
+      count++;
+    }
+
+    property = property->next_property;
+  }
+
+  g_hash_table_destroy(known);
+  return count;
 }
 
 /* --------------------------------------------------------------------------*/
