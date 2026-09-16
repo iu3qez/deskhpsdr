@@ -217,6 +217,7 @@ typedef struct _client {
   int tx_audio_session;
   int tx_audio_enabled;
   int rtty_enabled;             // Native RTTY extension explicitly enabled by this client
+  guint64 unknown_cmd_count;    // Commands this client sent that no handler claimed
   gint64 tx_chrono_next_us;
   guint tx_chrono_tick;
   guint64 tx_chrono_queue_count;
@@ -6535,7 +6536,14 @@ static void tci_handle_text(CLIENT *client, char *msg) {
   for (char *p = cmd.cmd; *p != 0; p++) {
     *p = g_ascii_tolower(*p);
   }
-  if (rigctl_debug) {
+  //
+  // "Enable TCI Debug" is the checkbox an operator reaches for when TCI
+  // misbehaves, so it has to cover the received commands too. It used to
+  // switch on the frame counters only, while this trace sat behind the
+  // rigctl debug flag, and a session was diagnosed with neither of them
+  // saying anything.
+  //
+  if (rigctl_debug || tci_debug) {
     t_print("TCI%d command=%s argc=%d\n", client->seq, cmd.cmd, cmd.argc);
     for (int i = 0; i < cmd.argc; i++) {
       t_print("  arg[%d]=%s\n", i, cmd.argv[i] ? cmd.argv[i] : "(null)");
@@ -6549,7 +6557,7 @@ static void tci_handle_text(CLIENT *client, char *msg) {
   if (g_str_has_prefix(cmd.cmd, "rtty_") &&
       strcmp(cmd.cmd, "rtty_enable") != 0 &&
       !client->rtty_enabled) {
-    if (rigctl_debug) {
+    if (rigctl_debug || tci_debug) {
       t_print("TCI%d %s ignored: RTTY extension not enabled\n", client->seq, cmd.cmd);
     }
     return;
@@ -6570,9 +6578,24 @@ static void tci_handle_text(CLIENT *client, char *msg) {
     d->handler(client, &cmd);
     return;
   }
-  if (!handled && rigctl_debug) {
-    t_print("TCI%d unknown command: %s\n",
-            client->seq, cmd.cmd ? cmd.cmd : "(null)");
+  if (!handled) {
+    //
+    // The protocol has no error response, so a client can only observe a
+    // timeout and cannot tell "not implemented" from "did not work". Until
+    // there is something to answer with, the server log is the only place
+    // where the two can be told apart, so this must not depend on a debug
+    // flag being on at the time: it is exactly the trace that is missing
+    // when an old binary without the extensions is running by accident.
+    //
+    // Rate limited like the audio counters: first ten, then every hundredth,
+    // so a client babbling at the server cannot flood the log.
+    //
+    client->unknown_cmd_count++;
+
+    if (client->unknown_cmd_count <= 10 || (client->unknown_cmd_count % 100) == 0) {
+      t_print("TCI%d unknown command (%" G_GUINT64_FORMAT " so far, no answer is possible): %s\n",
+              client->seq, client->unknown_cmd_count, cmd.cmd ? cmd.cmd : "(null)");
+    }
   }
 }
 
@@ -6755,6 +6778,7 @@ static void tci_init_client(CLIENT *client, int fd, int seq) {
   client->tx_audio_session = 0;
   client->tx_audio_enabled = 0;
   client->rtty_enabled = 0;
+  client->unknown_cmd_count = 0;
   client->text_rx_buf = NULL;
   client->text_rx_len = 0;
   client->text_rx_size = 0;
