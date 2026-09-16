@@ -33,6 +33,9 @@ struct _PROPERTY {
 };
 
 extern void clearProperties(void);
+extern void clearPropertiesSnapshot(void);
+extern int  snapshotProperties(void);
+extern int  restoreUnknownProperties(void);
 extern void loadProperties(const char *filename);
 extern char *getProperty(const char *name);
 extern void setProperty(const char *name, const char *value);

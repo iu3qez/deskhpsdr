@@ -440,6 +440,12 @@ void rigctl_menu(GtkWidget *parent) {
   //-------------------------------------------------------------------------------------
   w = gtk_check_button_new_with_label("Enable TCI Debug");
   gtk_widget_set_name(w, "boldlabel");
+  gtk_widget_set_tooltip_text(w,
+                              "Log the TCI traffic: the commands received from each client\n"
+                              "and the audio/IQ frame counters.\n\n"
+                              "A command the server does not recognise is always logged,\n"
+                              "with or without this option, because the protocol has no\n"
+                              "error response to send back to the client.");
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(w), tci_debug);
   gtk_grid_attach(GTK_GRID(grid), w, 3, row, 1, 1);
   g_signal_connect(w, "toggled", G_CALLBACK(tci_debug_cb), NULL);

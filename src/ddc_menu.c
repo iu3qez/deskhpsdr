@@ -28,6 +28,21 @@
 #include "radio.h"
 #include "new_protocol.h"
 
+//
+// The DDC index is not the receiver index. On HERMES receiver[i] sits on
+// DDC(i); on ANGELIA, ORION, ORION2 and SATURN it sits on DDC(i+2), which is
+// why the RX1/RX2 markers below land on different columns per device. See the
+// same note in new_protocol.c, next to the frequency words.
+//
+// Two receivers can never share a DDC, each one has its own. What this matrix
+// shares is the ADC: several DDCs may be fed from the same one.
+//
+// Only HERMES and ANGELIA honour this matrix. p2_receiver_adc_assignment() in
+// new_protocol.c passes a negative DDC index for every other device, which
+// falls back to receiver[i]->adc, so on Orion/Orion2/Saturn/G2 the ADC of a
+// receiver is chosen in the Receive menu under "Select ADC" instead. The
+// button that opens this panel is hidden on those devices for that reason.
+//
 int p2_ddc_adc_map[P2_MAX_DDCS] = { 0, 1, 0, 1, 0, 0, 0 };
 
 static GtkWidget *dialog = NULL;
@@ -180,6 +195,8 @@ void ddc_menu(GtkWidget *parent) {
   gtk_grid_attach(GTK_GRID(grid), title, 0, 1, P2_MAX_DDCS + 1, 1);
   if (!is_hermes) {
     note = gtk_label_new("Advanced Protocol 2 setting:\nSelect which ADC feeds each DDC. "
+                         "Each receiver has its own DDC, what is shared here is the ADC. "
+                         "RX1/RX2 mark the DDCs the receivers actually use.\n"
                          "Diversity and PureSignal use fixed protocol assignments.");
   } else {
     note = gtk_label_new("Advanced Protocol 2 setting:\nIf HERMES no selection, has only one ADC.");

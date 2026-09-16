@@ -3,6 +3,7 @@ GNUmakefile
 *.log
 *.toc
 *.o
+*.d
 *.diff
 *.rej
 *.orig
@@ -16,6 +17,9 @@ deskhpsdr
 !release/deskhpsdr
 deskHPSDR.app
 hpsdrsim
+tci_spectrum_test
+property_test
+tci_snapshot_model_test
 wdspWisdom*
 *.props
 ip.addr

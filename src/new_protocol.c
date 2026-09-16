@@ -1529,7 +1529,9 @@ static void new_protocol_high_priority(void) {
     // Set frequencies for all receivers
     //
     // note that for HERMES, receiver[i] is associated with DDC(i) but beyond
-    // (that is, ANGELIA, ORION, ORION2, SATURN) receiver[i] is associated with DDC(i+2)
+    // (that is, ANGELIA, ORION, ORION2, SATURN) receiver[i] is associated with DDC(i+2).
+    // Two receivers never share a DDC, each one has its own; what can be shared
+    // is the ADC that feeds them, see p2_receiver_adc_assignment() and ddc_menu.c
     int ddc = 0;
     if (device == NEW_DEVICE_ANGELIA  || device == NEW_DEVICE_ORION ||
         device == NEW_DEVICE_ORION2 || device == NEW_DEVICE_SATURN) { ddc = 2; }
