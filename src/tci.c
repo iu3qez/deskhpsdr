@@ -571,45 +571,60 @@ void shutdown_tci(void) {
   }
 }
 
-static int tci_queue_frame(CLIENT *client, int type, const char *msg, int check_running) {
+//
+// Queue one frame for a client with tci_mutex already held. Returns 1 when the
+// frame was queued, and then the caller owes lws_cancel_service() once it has
+// released the mutex.
+//
+// Split out of tci_queue_frame() so that a caller can change client state and
+// queue the frames that report it inside one single hold of the mutex. That is
+// what orders those frames against a broadcast raised meanwhile by the GTK
+// thread, which has to take the same mutex to queue anything.
+//
+static int tci_queue_frame_locked(CLIENT *client, int type, const char *msg, int check_running) {
   RESPONSE *resp;
+
   if (client == NULL) { return 0; }
+
   if (check_running && !client->running) { return 0; }
+
+  if (type == opTEXT && client->idle_queued >= 100) { return 0; }
+
+  if (client->wsi == NULL) { return 0; }
+
   resp = g_new(RESPONSE, 1);
   resp->client = client;
   resp->type = type;
   resp->bin = NULL;
   resp->len = 0;
+
   if (msg != NULL) {
     g_strlcpy(resp->msg, msg, MAXMSGSIZE);
   } else {
     resp->msg[0] = 0;
   }
-  g_mutex_lock(&tci_mutex);
-  if (type == opTEXT && client->idle_queued >= 100) {
-    g_mutex_unlock(&tci_mutex);
-    g_free(resp);
-    return 0;
+
+  if (client->lws_tx_queue == NULL) {
+    client->lws_tx_queue = g_queue_new();
   }
+
+  g_queue_push_tail(client->lws_tx_queue, resp);
   client->idle_queued++;
-  if (client->wsi != NULL) {
-    if (client->lws_tx_queue == NULL) {
-      client->lws_tx_queue = g_queue_new();
-    }
-    g_queue_push_tail(client->lws_tx_queue, resp);
-    tci_lws_pending_writable = 1;
-    g_mutex_unlock(&tci_mutex);
-    if (tci_lws_context != NULL) {
-      lws_cancel_service(tci_lws_context);
-    }
-    return 1;
-  }
-  g_mutex_unlock(&tci_mutex);
-  g_free(resp);
+  tci_lws_pending_writable = 1;
+  return 1;
+}
+
+static int tci_queue_frame(CLIENT *client, int type, const char *msg, int check_running) {
+  int queued;
   g_mutex_lock(&tci_mutex);
-  if (client->idle_queued > 0) { client->idle_queued--; }
+  queued = tci_queue_frame_locked(client, type, msg, check_running);
   g_mutex_unlock(&tci_mutex);
-  return 0;
+
+  if (queued && tci_lws_context != NULL) {
+    lws_cancel_service(tci_lws_context);
+  }
+
+  return queued;
 }
 
 static int tci_queue_binary_frame(CLIENT *client, const unsigned char *data, size_t len) {
@@ -1191,17 +1206,38 @@ void tci_rx_spectrum_deliver(RECEIVER *rx) {
 void tci_rx_displaying_changed(RECEIVER *rx) {
   int state;
   int fps;
+  int state_changed;
+  int fps_changed;
+
   if (rx == NULL) { return; }
+
   if (rx->id < 0 || rx->id >= TCI_RX_AUDIO_MAX_RECEIVERS) { return; }
-  tci_spectrum_state_init();
+
   state = rx->displaying ? 1 : 0;
   fps = rx->fps;
-  if (tci_spectrum_displaying[rx->id] != state) {
-    tci_spectrum_displaying[rx->id] = state;
+  //
+  // The cache is what tci_cmd_spectrum_start() answers from, on the lws
+  // thread, so it is written here under tci_mutex. Holding the mutex also
+  // orders this update against the frames a subscription queues: a state
+  // change racing with a spectrum_start can only be queued after them, so the
+  // client sees one honest transition instead of a spurious 1 followed by 0.
+  //
+  g_mutex_lock(&tci_mutex);
+  tci_spectrum_state_init();
+  state_changed = (tci_spectrum_displaying[rx->id] != state);
+  tci_spectrum_displaying[rx->id] = state;
+  fps_changed = (tci_spectrum_display_fps[rx->id] != fps);
+  tci_spectrum_display_fps[rx->id] = fps;
+  g_mutex_unlock(&tci_mutex);
+
+  //
+  // Both broadcasts take tci_mutex themselves, so they run with it released.
+  //
+  if (state_changed) {
     tci_spectrum_state_changed(rx->id, state);
   }
-  if (tci_spectrum_display_fps[rx->id] != fps) {
-    tci_spectrum_display_fps[rx->id] = fps;
+
+  if (fps_changed) {
     tci_spectrum_fps_changed(rx->id);
   }
 }
@@ -6151,8 +6187,35 @@ static int tci_spectrum_valid_rx(int rx_id) {
          rx_id < TCI_RX_AUDIO_MAX_RECEIVERS && receiver[rx_id] != NULL;
 }
 
+//
+// Displaying state of a receiver as TCI knows it. The cache is what drives the
+// spectrum_state events, so answering from it keeps the immediate reply of
+// spectrum_start consistent with the event stream, instead of reading
+// rx->displaying from the lws thread while the GTK thread owns that field
+// under rx->display_mutex.
+//
+// Before the first rx_set_displaying() the cache holds -1. There is no event
+// stream yet in that window and no display cycle either, so the receiver field
+// is both the only source and a quiet one.
+//
+// The caller holds tci_mutex.
+//
+static int tci_spectrum_displaying_state(int rx_id) {
+  int state;
+  tci_spectrum_state_init();
+  state = tci_spectrum_displaying[rx_id];
+
+  if (state < 0) {
+    state = (receiver[rx_id] != NULL && receiver[rx_id]->displaying) ? 1 : 0;
+  }
+
+  return state;
+}
+
 static void tci_cmd_spectrum_start(CLIENT *client, const TCI_CMD *cmd) {
   char msg[MAXMSGSIZE];
+  char state_msg[MAXMSGSIZE];
+  int queued;
   int rx_id;
   int bins;
   int fps_req;
@@ -6183,10 +6246,11 @@ static void tci_cmd_spectrum_start(CLIENT *client, const TCI_CMD *cmd) {
   if (fps_req < 1) { fps_req = 1; }
 
   display_fps = tci_spectrum_display_rate(rx_id);
-  displaying = receiver[rx_id]->displaying ? 1 : 0;
   // level 0 of the ladder, so the negotiated rate agrees with what the
   // producer and the display-rate path compute later (KTD5)
   fps_eff = tci_spectrum_fps_step(tci_spectrum_ladder_fps(0, fps_req), display_fps);
+  snprintf(msg, sizeof(msg), "%s:%d,%d,%d;",
+           tci_cmd_name("spectrum_start", "SPECTRUM_START"), rx_id, bins, fps_eff);
   g_mutex_lock(&tci_mutex);
   was_enabled = client->spectrum_enabled[rx_id];
   client->spectrum_enabled[rx_id] = 1;
@@ -6202,23 +6266,41 @@ static void tci_cmd_spectrum_start(CLIENT *client, const TCI_CMD *cmd) {
   tci_spectrum_ladder_init(&client->spectrum_ladder[rx_id], g_get_monotonic_time());
   client->spectrum_have_span[rx_id] = 0;       // no effective span yet
   // a span requested before the subscription, or across a restart, is kept
-  g_mutex_unlock(&tci_mutex);
 
+  //
+  // Bump the subscriber count while still holding the mutex: a broadcast that
+  // finds it at zero returns without sending anything, so incrementing it
+  // after the unlock would let a state change in that window pass this client
+  // by.
+  //
   if (!was_enabled) {
     g_atomic_int_inc(&tci_spectrum_clients);
   }
 
-  snprintf(msg, sizeof(msg), "%s:%d,%d,%d;",
-           tci_cmd_name("spectrum_start", "SPECTRUM_START"), rx_id, bins, fps_eff);
-  tci_send_text(client, msg);
   //
   // The display may be paused right now (TX on a non-duplex radio), in which
   // case no frame would follow and the client could not tell that apart from
   // a dead link. Report the current state immediately (R9).
   //
-  snprintf(msg, sizeof(msg), "%s:%d,%d;",
+  // Read and queue inside this same hold of tci_mutex: see
+  // tci_rx_displaying_changed(). Any state change racing with this
+  // subscription lands behind these two frames, never in front of them.
+  //
+  displaying = tci_spectrum_displaying_state(rx_id);
+  snprintf(state_msg, sizeof(state_msg), "%s:%d,%d;",
            tci_cmd_name("spectrum_state", "SPECTRUM_STATE"), rx_id, displaying);
-  tci_send_text(client, msg);
+  queued = tci_queue_frame_locked(client, opTEXT, msg, 1);
+  queued |= tci_queue_frame_locked(client, opTEXT, state_msg, 1);
+  g_mutex_unlock(&tci_mutex);
+
+  if (rigctl_debug) {
+    t_print("TCI%d response: %s\n", client->seq, msg);
+    t_print("TCI%d response: %s\n", client->seq, state_msg);
+  }
+
+  if (queued && tci_lws_context != NULL) {
+    lws_cancel_service(tci_lws_context);
+  }
 }
 
 static void tci_cmd_spectrum_stop(CLIENT *client, const TCI_CMD *cmd) {
