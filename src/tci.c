@@ -246,6 +246,15 @@ typedef struct _response {
 
 static GMutex tci_mutex;
 static GList *tci_clients = NULL;
+//
+// Number of client snapshots currently being walked, and the condition that
+// announces the last one is done. A CLIENT lives in the per-session storage of
+// its wsi, which libwebsockets frees once LWS_CALLBACK_CLOSED has returned, so
+// a snapshot walked with the mutex released could dereference a pointer that
+// has just been freed. The close path waits here for the walkers to finish.
+//
+static int tci_snapshot_walkers = 0;
+static GCond tci_snapshot_done;
 static CLIENT *tci_iq_stream_owner = NULL;
 static CLIENT *tci_digi_offset_owner = NULL;
 static CLIENT *tci_tx_owner = NULL;
@@ -420,6 +429,7 @@ static void tci_send_iq_stream_start(CLIENT *client, int receiver_id);
 static void tci_send_iq_stream_stop(CLIENT *client, int receiver_id);
 static int tci_queue_frame(CLIENT *client, int type, const char *msg, int check_running);
 static GList *tci_clients_snapshot(void);
+static void tci_clients_snapshot_free(GList *clients);
 static const char *tci_cmd_name(const char *lowercase, const char *uppercase);
 static void tci_cw_macros_empty(void);
 static void tci_rtty_buffer_empty(void);
@@ -470,7 +480,7 @@ static int tci_has_clients(void) {
   int have_clients;
   GList *clients = tci_clients_snapshot();
   have_clients = (clients != NULL);
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
   return have_clients;
 }
 
@@ -497,7 +507,7 @@ void tci_send_stop_and_flush(void) {
       (void) tci_queue_frame(client, opTEXT, "stop;", 0);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
   g_mutex_lock(&tci_mutex);
   tci_iq_stream_sample_rate = 0;
   tci_iq_stream_owner = NULL;
@@ -543,7 +553,7 @@ void shutdown_tci(void) {
         lws_set_timeout(client->wsi, PENDING_TIMEOUT_CLOSE_SEND, LWS_TO_KILL_ASYNC);
       }
     }
-    g_list_free(clients);
+    tci_clients_snapshot_free(clients);
     g_mutex_lock(&tci_mutex);
     tci_iq_stream_sample_rate = 0;
     tci_iq_stream_owner = NULL;
@@ -805,7 +815,7 @@ void tci_rx_iq_block(RECEIVER *rx, const double *iq, guint frames) {
       (void) tci_queue_binary_frame(client, frame, frame_len);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 //
@@ -892,7 +902,7 @@ static void tci_spectrum_send_to_subscribers(int rx_id, const char *msg) {
     }
   }
 
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 //
@@ -1067,7 +1077,7 @@ static void tci_spectrum_snapshot_ready(int rx_id) {
     woke_lws = 1;
   }
 
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 
   if (woke_lws && tci_lws_context != NULL) {
     lws_cancel_service(tci_lws_context);
@@ -1134,7 +1144,7 @@ static void tci_spectrum_fps_changed(int rx_id) {
     }
   }
 
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static void tci_spectrum_state_init(void) {
@@ -1243,12 +1253,37 @@ void tci_rx_displaying_changed(RECEIVER *rx) {
   }
 }
 
+//
+// A snapshot is walked with tci_mutex released, so the CLIENT pointers in it
+// have to stay alive for as long as the walk lasts. Registering the walk here,
+// and closing it in tci_clients_snapshot_free(), is what lets the close path
+// hold off the free of the per-session storage until nobody is looking.
+//
+// Every snapshot must be released with tci_clients_snapshot_free(), never with
+// g_list_free() alone, or the close path waits for a walk that has ended.
+//
 static GList *tci_clients_snapshot(void) {
   GList *clients;
   g_mutex_lock(&tci_mutex);
   clients = g_list_copy(tci_clients);
+  tci_snapshot_walkers++;
   g_mutex_unlock(&tci_mutex);
   return clients;
+}
+
+static void tci_clients_snapshot_free(GList *clients) {
+  g_mutex_lock(&tci_mutex);
+
+  if (tci_snapshot_walkers > 0) {
+    tci_snapshot_walkers--;
+  }
+
+  if (tci_snapshot_walkers == 0) {
+    g_cond_broadcast(&tci_snapshot_done);
+  }
+
+  g_mutex_unlock(&tci_mutex);
+  g_list_free(clients);
 }
 
 //
@@ -1268,7 +1303,7 @@ static void tci_send_text_by_seq(int seq, const char *msg) {
     }
   }
   if (target != NULL) { tci_send_text(target, msg); }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static void tci_cw_msg_reset_state(void) {
@@ -1295,7 +1330,7 @@ static void tci_cw_send_to_all(const char *msg) {
       tci_send_text(client, msg);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static int tci_cw_msg_queue_next(void) {
@@ -1547,7 +1582,7 @@ static void tci_service_tx_chrono(void) {
       tci_queue_tx_chrono_frame(client);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static void tci_handle_binary(CLIENT *client, const unsigned char *data, size_t len) {
@@ -1697,7 +1732,7 @@ static void tci_service_rx_audio(void) {
       }
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 //
@@ -1721,7 +1756,7 @@ static void tci_broadcast_dds(int v) {
       tci_send_dds(client, v);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static void tci_send_mox(CLIENT *client) {
@@ -1754,7 +1789,7 @@ static void tci_broadcast_mox_state(int state) {
       tci_send_mox_state(client, state);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 void tci_mox_changed(int state) {
@@ -1802,7 +1837,7 @@ static void tci_broadcast_tx_footswitch_state(int state) {
       }
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 void tci_tx_footswitch_changed(int state) {
@@ -1822,7 +1857,7 @@ static void tci_broadcast_tune_state(int state) {
       }
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 void tci_tune_changed(int state) {
@@ -1859,7 +1894,7 @@ static void tci_broadcast_lock(void) {
       tci_send_vfo_locks(client, VFO_A);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 void tci_lock_changed(void) {
@@ -1899,7 +1934,7 @@ static void tci_broadcast_vfo(int v, int c) {
       tci_send_vfo(client, v, c);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static void tci_set_vfo(CLIENT *client, int VfoNr, int Ch, long long SetFreq) {
@@ -2038,7 +2073,7 @@ static void tci_broadcast_rx_filter_band_value(int receiver_id, int low, int hig
       tci_send_text(client, msg);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 void tci_rx_filter_band_changed(int receiver_id) {
@@ -2052,7 +2087,7 @@ void tci_rx_filter_band_changed(int receiver_id) {
       tci_send_rx_filter_band(client, receiver_id);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static void tci_send_split(CLIENT *client) {
@@ -2106,7 +2141,7 @@ static void tci_broadcast_rit_enable(int receiver_id) {
       tci_send_rit_enable(client, receiver_id);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 void tci_rit_enable_changed(int receiver_id) {
@@ -2141,7 +2176,7 @@ static void tci_broadcast_xit_enable(void) {
       tci_send_xit_enable(client);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 void tci_xit_enable_changed(void) {
@@ -2184,7 +2219,7 @@ static void tci_broadcast_rit_offset(int receiver_id) {
       tci_send_rit_offset(client, receiver_id);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 void tci_rit_offset_changed(int receiver_id) {
@@ -2219,7 +2254,7 @@ static void tci_broadcast_xit_offset(void) {
       tci_send_xit_offset(client);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 void tci_xit_offset_changed(void) {
@@ -2628,7 +2663,7 @@ static void tci_broadcast_digu_offset(void) {
       tci_send_digu_offset_value(client, value);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static void tci_broadcast_digl_offset(void) {
@@ -2640,7 +2675,7 @@ static void tci_broadcast_digl_offset(void) {
       tci_send_digl_offset_value(client, value);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 void tci_digu_offset_changed(void) {
@@ -2685,7 +2720,7 @@ static void tci_broadcast_mute_state(int state) {
       tci_send_mute_state(client, state);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static void tci_send_rx_mute(CLIENT *client, int receiver_id) {
@@ -2712,7 +2747,7 @@ static void tci_broadcast_rx_mute_state(int receiver_id, int state) {
       tci_send_rx_mute_state(client, receiver_id, state);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 
@@ -2791,7 +2826,7 @@ static void tci_broadcast_sql_enable(int receiver_id) {
       tci_send_sql_enable(client, receiver_id);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static void tci_broadcast_sql_enable_value(int receiver_id, int state) {
@@ -2804,7 +2839,7 @@ static void tci_broadcast_sql_enable_value(int receiver_id, int state) {
       tci_send_sql_enable_value(client, receiver_id, state);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static void tci_broadcast_sql_level(int receiver_id) {
@@ -2817,7 +2852,7 @@ static void tci_broadcast_sql_level(int receiver_id) {
       tci_send_sql_level(client, receiver_id);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static void tci_broadcast_sql_level_value(int receiver_id, double value) {
@@ -2831,7 +2866,7 @@ static void tci_broadcast_sql_level_value(int receiver_id, double value) {
       tci_send_sql_level_value(client, receiver_id, value);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 void tci_sql_enable_changed(int receiver_id) {
@@ -2871,7 +2906,7 @@ static void tci_broadcast_rx_anf_enable(int receiver_id) {
       tci_send_rx_anf_enable(client, receiver_id);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static void tci_broadcast_rx_anf_enable_value(int receiver_id, int state) {
@@ -2884,7 +2919,7 @@ static void tci_broadcast_rx_anf_enable_value(int receiver_id, int state) {
       tci_send_rx_anf_enable_value(client, receiver_id, state);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 void tci_rx_anf_enable_changed(int receiver_id) {
@@ -2917,7 +2952,7 @@ static void tci_broadcast_rx_nf_enable(int receiver_id) {
       tci_send_rx_nf_enable(client, receiver_id);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static void tci_broadcast_rx_nf_enable_value(int receiver_id, int state) {
@@ -2930,7 +2965,7 @@ static void tci_broadcast_rx_nf_enable_value(int receiver_id, int state) {
       tci_send_rx_nf_enable_value(client, receiver_id, state);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 void tci_rx_nf_enable_changed(int receiver_id) {
@@ -2979,7 +3014,7 @@ static void tci_broadcast_rx_nb_enable(int receiver_id) {
       tci_send_rx_nb_enable(client, receiver_id);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static void tci_broadcast_rx_nb_enable_value(int receiver_id, int state) {
@@ -2992,7 +3027,7 @@ static void tci_broadcast_rx_nb_enable_value(int receiver_id, int state) {
       tci_send_rx_nb_enable_value(client, receiver_id, state);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 void tci_rx_nb_enable_changed(int receiver_id) {
@@ -3027,7 +3062,7 @@ static void tci_broadcast_rx_bin_enable(int receiver_id) {
       tci_send_rx_bin_enable(client, receiver_id);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static void tci_broadcast_rx_bin_enable_value(int receiver_id, int state) {
@@ -3040,7 +3075,7 @@ static void tci_broadcast_rx_bin_enable_value(int receiver_id, int state) {
       tci_send_rx_bin_enable_value(client, receiver_id, state);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 void tci_rx_bin_enable_changed(int receiver_id) {
@@ -3089,7 +3124,7 @@ static void tci_broadcast_rx_apf_enable(int receiver_id) {
       tci_send_rx_apf_enable(client, receiver_id);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static void tci_broadcast_rx_apf_enable_value(int receiver_id, int state) {
@@ -3102,7 +3137,7 @@ static void tci_broadcast_rx_apf_enable_value(int receiver_id, int state) {
       tci_send_rx_apf_enable_value(client, receiver_id, state);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 void tci_rx_apf_enable_changed(int receiver_id) {
@@ -3164,7 +3199,7 @@ static void tci_broadcast_rx_nr_enable(int receiver_id) {
       tci_send_rx_nr_enable(client, receiver_id);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static void tci_broadcast_rx_nr_enable_value(int receiver_id, int state) {
@@ -3177,7 +3212,7 @@ static void tci_broadcast_rx_nr_enable_value(int receiver_id, int state) {
       tci_send_rx_nr_enable_value(client, receiver_id, state);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 void tci_rx_nr_enable_changed(int receiver_id) {
@@ -3235,7 +3270,7 @@ static void tci_broadcast_volume(void) {
       tci_send_volume(client);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static void tci_broadcast_volume_value(double value) {
@@ -3247,7 +3282,7 @@ static void tci_broadcast_volume_value(double value) {
       tci_send_volume_value(client, value);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static void tci_broadcast_rx_volume(int receiver_id) {
@@ -3261,7 +3296,7 @@ static void tci_broadcast_rx_volume(int receiver_id) {
       tci_send_rx_volume(client, receiver_id, 1);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static void tci_broadcast_rx_volume_value(int receiver_id, double value) {
@@ -3277,7 +3312,7 @@ static void tci_broadcast_rx_volume_value(int receiver_id, double value) {
       tci_send_rx_volume_value(client, receiver_id, 1, value);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 void tci_volume_changed(int receiver_id) {
@@ -3320,7 +3355,7 @@ static void tci_broadcast_agc_gain(int receiver_id) {
       tci_send_agc_gain(client, receiver_id);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static void tci_broadcast_agc_gain_value(int receiver_id, double value) {
@@ -3334,7 +3369,7 @@ static void tci_broadcast_agc_gain_value(int receiver_id, double value) {
       tci_send_agc_gain_value(client, receiver_id, value);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 void tci_agc_gain_changed(int receiver_id) {
@@ -3393,7 +3428,7 @@ static void tci_broadcast_agc_mode(int receiver_id) {
       tci_send_agc_mode(client, receiver_id);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static void tci_broadcast_agc_mode_value(int receiver_id, int agc) {
@@ -3406,7 +3441,7 @@ static void tci_broadcast_agc_mode_value(int receiver_id, int agc) {
       tci_send_agc_mode_value(client, receiver_id, agc);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 void tci_agc_mode_changed(int receiver_id) {
@@ -3430,7 +3465,7 @@ static void tci_broadcast_txfreq(void) {
       tci_send_txfreq(client);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static void tci_broadcast_drive(void) {
@@ -3441,7 +3476,7 @@ static void tci_broadcast_drive(void) {
       tci_send_drive(client);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static void tci_broadcast_tune_drive(void) {
@@ -3452,7 +3487,7 @@ static void tci_broadcast_tune_drive(void) {
       tci_send_tune_drive(client);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 static void tci_broadcast_split(void) {
@@ -3463,7 +3498,7 @@ static void tci_broadcast_split(void) {
       tci_send_split(client);
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 void tci_split_changed(void) {
@@ -3534,7 +3569,7 @@ static void tci_broadcast_mode_value(int v, int m) {
       }
     }
   }
-  g_list_free(clients);
+  tci_clients_snapshot_free(clients);
 }
 
 void tci_vfo_changed(int id) {
@@ -7270,6 +7305,30 @@ static int tci_lws_callback(struct lws *wsi, enum lws_callback_reasons reason,
     }
     tci_set_locks_clear_client(client);
     tci_clients = g_list_remove(tci_clients, client);
+    //
+    // The client is out of the list now, so no new snapshot can contain it.
+    // The snapshots already taken are walked with tci_mutex released and may
+    // still hold the pointer, while libwebsockets frees the per-session
+    // storage as soon as this callback returns. Wait for those walks to end,
+    // otherwise a client disconnecting during a broadcast, which the spectrum
+    // producer makes far more likely, is read after it has been freed.
+    //
+    // The wait is bounded. A walk is a handful of queue pushes and ends in
+    // microseconds; if it somehow does not, stalling the TCI service thread
+    // would be worse than the race it guards, so give up, say so in the log
+    // and close as the code did before.
+    //
+    {
+      gint64 snapshot_deadline = g_get_monotonic_time() + 2 * G_TIME_SPAN_SECOND;
+
+      while (tci_snapshot_walkers > 0) {
+        if (!g_cond_wait_until(&tci_snapshot_done, &tci_mutex, snapshot_deadline)) {
+          t_print("%s: %d client snapshot(s) still in flight after 2s, closing anyway\n",
+                  __func__, tci_snapshot_walkers);
+          break;
+        }
+      }
+    }
     g_mutex_unlock(&tci_mutex);
     while (spectrum_dropped-- > 0) {
       (void) g_atomic_int_dec_and_test(&tci_spectrum_clients);
@@ -7408,7 +7467,7 @@ static gpointer tci_lws_server(gpointer data) {
           lws_callback_on_writable(wsi);
         }
       }
-      g_list_free(clients);
+      tci_clients_snapshot_free(clients);
     }
     lws_service(tci_lws_context, 0);
     g_usleep(1000);

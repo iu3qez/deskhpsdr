@@ -1075,6 +1075,25 @@ property-test:
 
 #############################################################################
 #
+#  Model of the TCI client snapshot pattern, run under AddressSanitizer.
+#  It does not exercise src/tci.c, it keeps the invariant of the pattern
+#  honest: a snapshot being walked holds off the free of a closing client.
+#  Slow and sanitizer-dependent, so it is not part of "make test".
+#
+#  Build it with -DTCI_SNAPSHOT_MODEL_UNGUARDED=1 to see the
+#  heap-use-after-free that the accounting prevents.
+#
+#############################################################################
+
+.PHONY:	tci-snapshot-model-test
+tci-snapshot-model-test:
+	$(CC) -std=gnu11 -Wall -Wextra -g -fsanitize=address -o tci_snapshot_model_test \
+		tests/tci_snapshot_model_test.c `$(PKG_CONFIG) --cflags --libs glib-2.0`
+	./tci_snapshot_model_test
+	@rm -f tci_snapshot_model_test
+
+#############################################################################
+#
 #  Run every standalone test harness.
 #
 #############################################################################
