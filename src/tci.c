@@ -455,6 +455,7 @@ static void tci_clients_snapshot_free(GList *clients);
 static const char *tci_cmd_name(const char *lowercase, const char *uppercase);
 static void tci_cw_macros_empty(void);
 static void tci_rtty_buffer_empty(void);
+static void tci_broadcast_txfreq(void);
 
 static void tci_begin_apply(void) {
   tci_apply_in_progress = 1;
@@ -1981,6 +1982,10 @@ static void tci_set_vfo(CLIENT *client, int VfoNr, int Ch, long long SetFreq) {
     tci_broadcast_dds(changed_vfo);
   }
   tci_broadcast_vfo(VfoNr, Ch);
+  // vfo_set_frequency() skips tci_tx_frequency_changed() inside the apply
+  // block, so send tx_frequency here. Otherwise clients get it only from
+  // tci_reporter(), up to 500 ms later.
+  tci_broadcast_txfreq();
 }
 
 static void tci_send_limits(CLIENT *client) {
