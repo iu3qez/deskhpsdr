@@ -217,6 +217,7 @@ typedef struct _client {
   int tx_audio_session;
   int tx_audio_enabled;
   int rtty_enabled;             // Native RTTY extension explicitly enabled by this client
+  int modulation_ex;            // 1 once the client queried modulation_ex
   guint64 unknown_cmd_count;    // Commands this client sent that no handler claimed
   gint64 tx_chrono_next_us;
   guint tx_chrono_tick;
@@ -2069,19 +2070,6 @@ static void tci_send_rx_filter_band(CLIENT *client, int v) {
   tci_send_text(client, msg);
 }
 
-static void tci_broadcast_rx_filter_band_value(int receiver_id, int low, int high) {
-  char msg[MAXMSGSIZE];
-  GList *clients = tci_clients_snapshot();
-  snprintf(msg, MAXMSGSIZE, "rx_filter_band:%d,%d,%d;", receiver_id, low, high);
-  for (GList *l = clients; l != NULL; l = l->next) {
-    CLIENT *client = (CLIENT *) l->data;
-    if (client != NULL && client->running) {
-      tci_send_text(client, msg);
-    }
-  }
-  tci_clients_snapshot_free(clients);
-}
-
 void tci_rx_filter_band_changed(int receiver_id) {
   GList *clients;
   if (!tci_running) { return; }
@@ -3579,7 +3567,7 @@ static const char *tci_mode_name(int m) {
   case modeCWU:
     return "CW";
   case modeFMN:
-    return "FM";
+    return "NFM";
   case modeAM:
     return "AM";
   case modeDIGU:
@@ -3597,6 +3585,34 @@ static const char *tci_mode_name(int m) {
   }
 }
 
+//
+// modulation_ex: the mode as modulation reports it, except that the two CW
+// sidebands keep their own names, which standard TCI folds into "CW".
+//
+//   query   modulation_ex:<rx>;       reply modulation_ex:<rx>,<mode>;
+//
+// The query is also the opt-in: from then on the client gets modulation_ex
+// right after every modulation it is sent. Setting a mode stays with
+// modulation, which already accepts cwl and cwu.
+//
+static const char *tci_mode_name_ex(int m) {
+  switch (m) {
+  case modeCWL:
+    return "CWL";
+  case modeCWU:
+    return "CWU";
+  default:
+    return tci_mode_name(m);
+  }
+}
+
+static void tci_send_modulation_ex(CLIENT *client, int v, int m) {
+  char msg[MAXMSGSIZE];
+  snprintf(msg, MAXMSGSIZE, "%s:%d,%s;", tci_cmd_name("modulation_ex", "MODULATION_EX"), v,
+           tci_mode_name_ex(m));
+  tci_send_text(client, msg);
+}
+
 static void tci_send_mode_value(CLIENT *client, int v, int m) {
   char msg[MAXMSGSIZE];
   if (client == NULL) { return; }
@@ -3604,6 +3620,9 @@ static void tci_send_mode_value(CLIENT *client, int v, int m) {
   if (v >= receivers || receiver[v] == NULL) { return; }
   snprintf(msg, MAXMSGSIZE, "modulation:%d,%s;", v, tci_mode_name(m));
   tci_send_text(client, msg);
+  if (client->modulation_ex) {
+    tci_send_modulation_ex(client, v, m);
+  }
   if (v == 0) {
     client->last_ma = m;
   } else {
@@ -3698,6 +3717,7 @@ static int tci_parse_mode(const char *mode_str) {
   if (!g_ascii_strcasecmp(mode_str, "cw"))   { return modeCWU; }
   if (!g_ascii_strcasecmp(mode_str, "cwl"))  { return modeCWL; }
   if (!g_ascii_strcasecmp(mode_str, "cwu"))  { return modeCWU; }
+  if (!g_ascii_strcasecmp(mode_str, "nfm"))  { return modeFMN; }
   if (!g_ascii_strcasecmp(mode_str, "fmn"))  { return modeFMN; }
   if (!g_ascii_strcasecmp(mode_str, "fm"))   { return modeFMN; }
   if (!g_ascii_strcasecmp(mode_str, "am"))   { return modeAM; }
@@ -5283,6 +5303,17 @@ static void tci_cmd_modulation(CLIENT *client, const TCI_CMD *cmd) {
   }
 }
 
+static void tci_cmd_modulation_ex(CLIENT *client, const TCI_CMD *cmd) {
+  int v = tci_int(cmd->argv[0], -1);
+  // the client knows the command, whichever receiver it asked about
+  client->modulation_ex = 1;
+  if (v < 0 || v > 1 || v >= receivers || receiver[v] == NULL) {
+    t_print("TCI%d modulation_ex ignored: invalid receiver %d\n", client->seq, v);
+    return;
+  }
+  tci_send_modulation_ex(client, v, vfo[v].mode);
+}
+
 static void tci_cmd_vfo(CLIENT *client, const TCI_CMD *cmd) {
   int VfoNr = tci_int(cmd->argv[0], 0);
   int Ch = tci_int(cmd->argv[1], 0);
@@ -5392,6 +5423,22 @@ static void tci_cmd_tune_drive(CLIENT *client, const TCI_CMD *cmd) {
 }
 
 
+//
+// The edges are normalized against the mode, and the mode may still be in
+// flight: a modulation received just before is queued on the main loop as
+// well. So the lws thread queues the edges as received, and normalization,
+// the change and the broadcast of what was applied all happen here, after
+// any mode change queued earlier (GLib dispatches idle sources of equal
+// priority in the order they were added).
+//
+static int tci_rx_filter_update_cb(void *data) {
+  int receiver_id = ((EXT_RX_FILTER_UPDATE *) data)->receiver_id;
+  ext_rx_filter_update(data);   // frees data
+  // edges rejected as empty still get an answer: the filter in force
+  tci_rx_filter_band_changed(receiver_id);
+  return G_SOURCE_REMOVE;
+}
+
 static void tci_cmd_rx_filter_band(CLIENT *client, const TCI_CMD *cmd) {
   int receiver_id = tci_int(cmd->argv[0], 0);
   if (receiver_id < 0 || receiver_id >= receivers || receiver[receiver_id] == NULL) {
@@ -5402,18 +5449,11 @@ static void tci_cmd_rx_filter_band(CLIENT *client, const TCI_CMD *cmd) {
       tci_send_rx_filter_band(client, receiver_id);
       return;
     }
-    EXT_RX_FILTER_UPDATE *fu;
-    int low = tci_int(cmd->argv[1], 0);
-    int high = tci_int(cmd->argv[2], 0);
-    if (!ext_normalize_rx_filter_band(vfo[receiver_id].mode, &low, &high)) {
-      return;
-    }
-    fu = g_new(EXT_RX_FILTER_UPDATE, 1);
+    EXT_RX_FILTER_UPDATE *fu = g_new(EXT_RX_FILTER_UPDATE, 1);
     fu->receiver_id = receiver_id;
-    fu->low = low;
-    fu->high = high;
-    g_idle_add(ext_rx_filter_update, fu);
-    tci_broadcast_rx_filter_band_value(receiver_id, low, high);
+    fu->low = tci_int(cmd->argv[1], 0);
+    fu->high = tci_int(cmd->argv[2], 0);
+    g_idle_add(tci_rx_filter_update_cb, fu);
   } else {
     tci_send_rx_filter_band(client, receiver_id);
   }
@@ -6622,6 +6662,7 @@ static const TCI_DISPATCH tci_dispatch[] = {
   { "audio_start",       1,  1, tci_cmd_audio_start },
   { "audio_stop",        1,  1, tci_cmd_audio_stop },
   { "modulation",        1,  2, tci_cmd_modulation },
+  { "modulation_ex",     1,  1, tci_cmd_modulation_ex },
   { "vfo",               2,  3, tci_cmd_vfo },
   { "rx_smeter",         1,  3, tci_cmd_rx_smeter },
   { "drive",             0,  2, tci_cmd_drive },
@@ -6907,6 +6948,7 @@ static void tci_init_client(CLIENT *client, int fd, int seq) {
   client->tx_audio_session = 0;
   client->tx_audio_enabled = 0;
   client->rtty_enabled = 0;
+  client->modulation_ex = 0;
   client->unknown_cmd_count = 0;
   client->text_rx_buf = NULL;
   client->text_rx_len = 0;
@@ -7050,7 +7092,7 @@ static void tci_send_initial_state(CLIENT *client) {
   tci_send_audio_samplerate(client);
   tci_send_text(client, "audio_stream_sample_type:float32;");
   tci_send_text(client, "audio_stream_channels:1;");
-  tci_send_text(client, "modulations_list:LSB,USB,DSB,CW,FMN,AM,DIGU,SPEC,DIGL,SAM,DRM;");
+  tci_send_text(client, "modulations_list:LSB,USB,DSB,CW,NFM,AM,DIGU,SPEC,DIGL,SAM,DRM;");
   tci_send_dds(client, VFO_A);
   tci_send_text(client, "if:0,0,0;");
   tci_send_text(client, "if:0,1,0;");

@@ -1,7 +1,7 @@
 # deskHPSDR TCI Remote Extensions
 
 This document specifies a set of opt-in additions to deskHPSDR's TCI 2.0
-server: a binary spectrum stream, two CAT-like commands, WebSocket
+server: a binary spectrum stream, three CAT-like commands, WebSocket
 compression, and a configurable bind address. It is written for a reader
 who has never seen deskHPSDR's source: every offset, constant and reply
 string below is meant to match `src/tci_spectrum.h` and `src/tci.c`
@@ -17,8 +17,9 @@ extensions add:
 - a binary spectrum stream (`type=4` frames) a client can subscribe to,
   intended for a remote panadapter over a constrained link (WAN,
   WireGuard) at well under 50 kbit/s;
-- `rx_att_ex` and `band_ex`, two additional CAT-like text commands for
-  attenuation/gain and band changes;
+- `rx_att_ex`, `band_ex` and `modulation_ex`, three additional CAT-like
+  text commands for attenuation/gain, band changes and the CW sideband of
+  the current mode;
 - optional `permessage-deflate` WebSocket compression;
 - a configurable bind address for the TCI and rigctl TCP listeners.
 
@@ -29,14 +30,14 @@ actively streaming spectrum data. No existing command, reply or event is
 changed, renamed or reordered. Stock TCI clients (Thetis, ExpertSDR-like
 clients, ordinary TOTW-style browser clients) see identical behavior to
 a deskHPSDR build without these extensions, aside from the WebSocket
-compression a browser negotiates by default in its handshake (section 5).
+compression a browser negotiates by default in its handshake (section 6).
 
 **There is no authentication.** TCI never had one, and this extension
 adds none: any client that can open a WebSocket to port 40001 can read
 the spectrum, change attenuation and change bands. Do not expose the
 port to the open Internet. Run it inside a private network, and for
 remote access use WireGuard or an equivalent VPN. The bind address
-(section 6) is the only access control available, and it is a network
+(section 7) is the only access control available, and it is a network
 perimeter control, not authentication.
 
 ## 2. Spectrum stream
@@ -171,7 +172,7 @@ sends `spectrum_fps:<rx>,<fps>;` to the affected client only.
 A frame that is still waiting when a new one is produced is *replaced*,
 never queued behind its predecessor: a slow client always gets the
 freshest data, at the cost of gaps in `seq`. A gap in `seq` is exactly
-the count of replaced frames, and is the signal the probe (section 7)
+the count of replaced frames, and is the signal the probe (section 8)
 reports as "seq gaps".
 
 **Priority is audio first, always.** The slot is written only when the
@@ -226,7 +227,7 @@ At the negotiation defaults (512 bins, 10 fps), each frame is
 `64 + 32 + 512 = 608` bytes, i.e. roughly `608 * 8 * 10 ≈ 49` kbit/s of
 raw payload before any transport overhead or compression — the
 "under 50 kbit/s" figure referenced in the plan's goal. With
-`permessage-deflate` negotiated (section 5), this is typically well
+`permessage-deflate` negotiated (section 6), this is typically well
 below that; the exact figure depends on the entropy of the current
 scene and should be measured on the link in question, not assumed.
 
@@ -284,7 +285,32 @@ radio's tuning limits, to avoid landing in the partially-applied state
 `vfo_band_changed()` itself would leave behind if it had to give up
 partway through.
 
-## 5. `permessage-deflate`
+## 5. `modulation_ex` — the CW sideband of the current mode
+
+Standard TCI has a single `CW`, so `modulation` reports CWL and CWU
+alike as `CW` and a client cannot tell which sideband is in use.
+`modulation_ex` reports the same mode with the two CW sidebands named
+apart; every other mode keeps the name `modulation` gives it. `<rx>` is
+a VFO index, as for `band_ex`.
+
+| Command | Reply |
+|---|---|
+| `modulation_ex:<rx>;` (query) | `modulation_ex:<rx>,<mode>;` — `<mode>` is `CWL` or `CWU` in CW, otherwise the name `modulation` sends |
+
+The query is also the subscription. From its first `modulation_ex`
+query on, a client receives `modulation_ex:<rx>,<mode>;` right after
+every `modulation:<rx>,<mode>;` it is sent, whatever changed the mode:
+the GUI, CAT, or another TCI client. A client that never queries it
+receives no `modulation_ex` message at all. The subscription lasts as
+long as the connection and has no unsubscribe; after a reconnect the
+client queries again. A query naming a VFO that does not exist still
+subscribes the client, and gets no reply.
+
+Setting the mode stays with `modulation`, which accepts `cwl` and `cwu`
+as well as `cw` (taken as CWU). `modulation_ex` with a mode argument is
+ignored.
+
+## 6. `permessage-deflate`
 
 The server offers RFC 7692 `permessage-deflate` compression
 (`client_no_context_takeover; client_max_window_bits`) in the WebSocket
@@ -303,7 +329,7 @@ new code path for any client to opt into, and no reply format changes.
   compiles and runs unchanged; it logs that `permessage-deflate` is not
   available and serves every client uncompressed, as today.
 
-## 6. Bind address
+## 7. Bind address
 
 Two configuration properties restrict which interface deskHPSDR's
 network servers listen on:
@@ -336,7 +362,7 @@ parks the vhost on its deferred no-listener list and still reports a
 successfully created context, which would leave the server up with no
 listening socket and no visible error.
 
-## 7. The Python probe
+## 8. The Python probe
 
 `stuff/tci_spectrum_probe.py` is a standalone script (PEP 723 `uv`
 header, `websockets` dependency) used to exercise every command and
@@ -357,7 +383,7 @@ it back, proving the parser against the layout in section 2.3 without
 needing a radio. Run `uv run --script stuff/tci_spectrum_probe.py --help`
 (or `<subcommand> --help`) for the full option list and more examples.
 
-## 8. Compatibility notes
+## 9. Compatibility notes
 
 - `type=4` and `format=4` were chosen because the ExpertSDR TCI
   specification this server otherwise follows only assigns 0-3. A
@@ -369,3 +395,7 @@ needing a radio. Run `uv run --script stuff/tci_spectrum_probe.py --help`
   about.
 - Nothing described here changes the on-the-wire format of the existing
   audio or I/Q streams, or of any other TCI text command.
+- Independently of these extensions, narrow FM is reported by
+  `modulation` and advertised in `modulations_list` as `NFM`, the name
+  the TCI specification gives it. Earlier builds answered `FM` and
+  advertised `FMN`; `nfm`, `fm` and `fmn` are all accepted on input.
