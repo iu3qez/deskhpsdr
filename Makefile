@@ -20,9 +20,8 @@ SATURN   ?= OFF
 USBOZY   ?= OFF
 STEMLAB  ?= OFF
 TTS      ?= OFF
-AUDIO    ?= PULSE
+AUDIO    ?= DEFAULT
 AUTOGAIN ?= OFF
-WDSP1    ?= OFF
 AH4IOB   ?= OFF
 DEVEL    ?= OFF
 
@@ -35,18 +34,13 @@ DEVEL    ?= OFF
 #  SATURN       | If ON, compile with native SATURN/G2 XDMA support
 #  USBOZY       | If ON, deskHPSDR can talk to legacy USB OZY radios (needs  libusb-1.0)
 #  STEMLAB      | If ON, deskHPSDR can start SDR app on RedPitay via Web interface (needs libcurl)
-#  AUDIO        | If AUDIO=ALSA, use ALSA rather than PulseAudio on Linux (use PulseAudio recommend)
+#  AUDIO        | DEFAULT uses native CoreAudio on macOS and miniaudio on Linux
 #  AUTOGAIN     | If ON (only if using a Hermes Lite 2 or similar), activate automatic regulation of RxPGA gain
 #  AH4IOB       | If ON, enable support for AH-4 compatible ATU using the Hermes Lite 2 IO board
 #  DEVEL        | ONLY FOR INTERNAL DEVELOPER USE AND TESTING ! Leave it ever OFF please !
 #
-#  If you want to use a non-default compile time option, write them
-#  into a file "make.config.deskhpsdr". So, for example, if you want to
-#  have AUDIO=ALSA, create a file make.config.deskhpsdr in
-#  the deskhpsdr directory with line that read
-#
-#  AUDIO=ALSA
-#
+#  If you want to use a non-default compile time option, write it
+#  into a file "make.config.deskhpsdr".
 #################################################################################################################
 
 # ------------------------------------------------------------------
@@ -133,12 +127,7 @@ else
 	endif
 endif
 
-ifeq ($(WDSP1),ON)
-WDSP_DIR := wdsp-1.29
-CFLAGS += -DWDSP1
-else
 WDSP_DIR := wdsp-2.10
-endif
 
 # clang detection (macOS: CC may be "cc" but still clang)
 IS_CLANG := $(shell $(CC) --version 2>/dev/null | head -n 1 | grep -qi clang && echo 1 || echo 0)
@@ -277,26 +266,27 @@ endif
 #
 ##############################################################################
 
+RTMIDI_DIR ?= rtmidi
+RTMIDI_LIB := $(RTMIDI_DIR)/librtmidi.a
+
 ifeq ($(UNAME_S),Darwin)
 override MIDI := ON
 endif
 ifeq ($(MIDI),ON)
 MIDI_OPTIONS=-DMIDI
-MIDI_HEADERS= src/midi_layer.h src/midi_menu.h src/alsa_midi.h
+MIDI_HEADERS= src/midi_layer.h src/midi_menu.h src/alsa_midi.h rtmidi/rtmidi_c.h
+MIDI_SOURCES= src/rtmidi_midi.c src/midi2.c src/midi3.c src/midi_menu.c
+MIDI_OBJS= src/rtmidi_midi.o src/midi2.o src/midi3.o src/midi_menu.o
+MIDI_INCLUDE=-I./rtmidi
 ifeq ($(UNAME_S), Darwin)
-MIDI_SOURCES= src/mac_midi.c src/midi2.c src/midi3.c src/midi_menu.c
-MIDI_OBJS= src/mac_midi.o src/midi2.o src/midi3.o src/midi_menu.o
-MIDI_LIBS= -framework CoreMIDI -framework Foundation
+MIDI_LIBS= $(RTMIDI_LIB) -framework CoreMIDI -framework CoreAudio -framework CoreFoundation -framework CoreServices -lc++
 endif
 ifeq ($(UNAME_S), Linux)
-MIDI_SOURCES= src/alsa_midi.c src/midi2.c src/midi3.c src/midi_menu.c
-MIDI_OBJS= src/alsa_midi.o src/midi2.o src/midi3.o src/midi_menu.o
-MIDI_LIBS= -lasound
-endif
+MIDI_LIBS= $(RTMIDI_LIB) -lasound -lstdc++
 endif
 CPP_DEFINES += -DMIDI
-CPP_SOURCES += src/mac_midi.c src/midi2.c src/midi3.c src/midi_menu.c
-CPP_SOURCES += src/alsa_midi.c src/midi2.c src/midi3.c src/midi_menu.c
+CPP_SOURCES += src/rtmidi_midi.c src/midi2.c src/midi3.c src/midi_menu.c
+endif
 
 
 ##############################################################################
@@ -434,52 +424,24 @@ CPP_DEFINES += -D__WAYLAND__
 ##############################################################################
 #
 # Options for audio module
-#  - macOS: native CoreAudio
-#  - Linux: either PULSEAUDIO (default) or ALSA (upon request)
+#  - macOS: native CoreAudio by default, miniaudio optional
+#  - Linux: miniaudio (PulseAudio/ALSA backend selection handled by miniaudio)
 #
 ##############################################################################
 
 ifeq ($(UNAME_S), Darwin)
-override AUDIO := COREAUDIO
-endif
-ifeq ($(UNAME_S), Linux)
-  ifneq ($(AUDIO) , ALSA)
-    override AUDIO := PULSE
+  ifeq ($(AUDIO), DEFAULT)
+    override AUDIO := COREAUDIO
   endif
 endif
-
-##############################################################################
-#
-# PulseAudio backend (Linux only)
-#
-##############################################################################
-
-ifeq ($(AUDIO), PULSE)
-AUDIO_OPTIONS=-DPULSEAUDIO
-AUDIO_INCLUDE=
-AUDIO_LIBS=-lpulse-simple -lpulse -lpulse-mainloop-glib
-AUDIO_SOURCES=src/pulseaudio.c
-AUDIO_OBJS=src/pulseaudio.o
+ifeq ($(UNAME_S), Linux)
+  ifeq ($(AUDIO), PULSE)
+    $(warning AUDIO=PULSE is obsolete; using AUDIO=MINIAUDIO)
+  else ifeq ($(AUDIO), ALSA)
+    $(warning AUDIO=ALSA is obsolete; using AUDIO=MINIAUDIO)
+  endif
+  override AUDIO := MINIAUDIO
 endif
-# Include the PulseAudio implementation in the cppcheck source set.
-CPP_DEFINES += -DPULSEAUDIO
-CPP_SOURCES += src/pulseaudio.c
-
-##############################################################################
-#
-# Add libraries for using ALSA, if requested
-#
-##############################################################################
-
-ifeq ($(AUDIO), ALSA)
-AUDIO_OPTIONS=-DALSA
-AUDIO_INCLUDE=
-AUDIO_LIBS=-lasound
-AUDIO_SOURCES=src/audio.c
-AUDIO_OBJS=src/audio.o
-endif
-CPP_DEFINES += -DALSA
-CPP_SOURCES += src/audio.c
 
 ##############################################################################
 #
@@ -488,7 +450,7 @@ CPP_SOURCES += src/audio.c
 ##############################################################################
 
 ifeq ($(AUDIO), COREAUDIO)
-AUDIO_OPTIONS=-DCOREAUDIO
+AUDIO_OPTIONS=-DAUDIO_RINGBUFFER -DCOREAUDIO
 AUDIO_INCLUDE=
 AUDIO_LIBS=-framework CoreAudio \
 	-framework AudioToolbox \
@@ -496,11 +458,34 @@ AUDIO_LIBS=-framework CoreAudio \
 	-framework CoreFoundation \
 	-framework CoreServices \
 	-framework CoreMIDI
-AUDIO_SOURCES=src/macos_audio.c src/coreaudio.c
-AUDIO_OBJS=src/macos_audio.o src/coreaudio.o
+AUDIO_SOURCES=src/buffered_audio.c src/coreaudio.c
+AUDIO_OBJS=src/buffered_audio.o src/coreaudio.o
+CPP_DEFINES += -DAUDIO_RINGBUFFER -DCOREAUDIO
+CPP_SOURCES += src/buffered_audio.c src/coreaudio.c
 endif
-CPP_DEFINES += -DCOREAUDIO
-CPP_SOURCES += src/macos_audio.c src/coreaudio.c
+
+##############################################################################
+#
+# miniaudio backend (cross-platform; CoreAudio/ALSA/PulseAudio/WASAPI)
+#
+##############################################################################
+
+ifeq ($(AUDIO), MINIAUDIO)
+MINIAUDIO_DIR ?= miniaudio
+AUDIO_OPTIONS=-DAUDIO_RINGBUFFER -DMINIAUDIO
+AUDIO_INCLUDE=-I$(MINIAUDIO_DIR)
+AUDIO_LIBS=$(MINIAUDIO_DIR)/libminiaudio.a
+ifeq ($(UNAME_S), Darwin)
+AUDIO_LIBS += -framework CoreFoundation -framework CoreAudio -framework AudioToolbox
+endif
+ifeq ($(UNAME_S), Linux)
+AUDIO_LIBS += -ldl
+endif
+AUDIO_SOURCES=src/buffered_audio.c src/miniaudio_audio.c
+AUDIO_OBJS=src/buffered_audio.o src/miniaudio_audio.o
+CPP_DEFINES += -DAUDIO_RINGBUFFER -DMINIAUDIO
+CPP_SOURCES += src/buffered_audio.c src/miniaudio_audio.c
+endif
 
 ##############################################################################
 #
@@ -607,7 +592,7 @@ endif
 endif
 
 ifeq ($(UNAME_S), Darwin)
-SYS_LIBS=-framework IOKit -framework Cocoa -framework WebKit -framework CoreText
+SYS_LIBS=-framework IOKit -framework Cocoa -framework WebKit -framework CoreText -framework SystemConfiguration
 endif
 
 ##############################################################################
@@ -633,7 +618,7 @@ OPTIONS=$(MIDI_OPTIONS) $(USBOZY_OPTIONS) \
 	-DGIT_BRANCH='"$(GIT_BRANCH)"' \
 	-DGIT_REMOTE='"$(GIT_REMOTE)"'
 
-INCLUDES=$(GTK_INCLUDE) $(WDSP_INCLUDE) $(SOLAR_INCLUDE) $(TELNET_INCLUDE) $(AUDIO_INCLUDE) $(STEMLAB_INCLUDE) $(TCI_INCLUDE) $(JSON_INCLUDE)
+INCLUDES=$(GTK_INCLUDE) $(WDSP_INCLUDE) $(SOLAR_INCLUDE) $(TELNET_INCLUDE) $(AUDIO_INCLUDE) $(STEMLAB_INCLUDE) $(TCI_INCLUDE) $(JSON_INCLUDE) $(MIDI_INCLUDE)
 # Automatic header dependency tracking: each object also emits a .d file
 # listing the headers it was compiled against, which is included below.
 # -MP adds phony targets so a deleted header does not break the build.
@@ -993,6 +978,12 @@ $(PROGRAM):  $(OBJS) $(AUDIO_OBJS) $(USBOZY_OBJS) $(TCI_OBJS) \
 ifneq (z$(WDSP_INCLUDE), z)
 	@+make -C $(WDSP_DIR)
 endif
+ifeq ($(AUDIO), MINIAUDIO)
+	@+$(MAKE) -C $(MINIAUDIO_DIR)
+endif
+ifeq ($(MIDI),ON)
+	@+$(MAKE) -C $(RTMIDI_DIR)
+endif
 ifneq (z$(SOLAR_INCLUDE), z)
 	@+make -C libsolar
 endif
@@ -1115,8 +1106,9 @@ clean:
 	rm -f src/*.d
 	rm -f src/*.orig
 	rm -f $(PROGRAM) hpsdrsim bootloader
-	@if [ -d wdsp-1.29 ]; then $(MAKE) -C wdsp-1.29 clean; fi
 	@if [ -d wdsp-2.10 ]; then $(MAKE) -C wdsp-2.10 clean; fi
+	@if [ -d miniaudio ]; then $(MAKE) -C miniaudio clean; fi
+	@if [ -d rtmidi ]; then $(MAKE) -C rtmidi clean; fi
 	@if [ -d libsolar ]; then $(MAKE) -C libsolar clean; fi
 	@if [ -d libtelnet ]; then $(MAKE) -C libtelnet clean; fi
 ifeq ($(UNAME_S), Darwin)
@@ -1132,8 +1124,8 @@ uninstall:
 	rm -f src/*.o
 	rm -f src/*.d
 	rm -f $(PROGRAM) hpsdrsim bootloader
-	@if [ -d wdsp-1.29 ]; then $(MAKE) -C wdsp-1.29 clean; fi
 	@if [ -d wdsp-2.10 ]; then $(MAKE) -C wdsp-2.10 clean; fi
+	@if [ -d rtmidi ]; then $(MAKE) -C rtmidi clean; fi
 	@if [ -d libsolar ]; then $(MAKE) -C libsolar clean; fi
 	@if [ -d libtelnet ]; then $(MAKE) -C libtelnet clean; fi
 	@echo "Remove installed deskHPSDR binary..."

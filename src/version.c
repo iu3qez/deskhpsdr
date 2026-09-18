@@ -44,9 +44,6 @@ char build_options[] =
 #ifdef __AUTOG__
   "AUTOGAIN-HL2 "
 #endif
-#ifdef WDSP1
-  "FORCE_WDSP-1.X "
-#endif
 #ifdef __AH4IOB__
   "AH4IOB "
 #endif
@@ -59,15 +56,10 @@ char build_options[] =
         "";
 
 char build_audio[] =
-#ifdef ALSA
-  "ALSA";
-#endif
-#ifdef PULSEAUDIO
-  "PulseAudio";
-#endif
-#ifdef COREAUDIO
+#ifdef MINIAUDIO
+  "miniAudio";
+#elif defined(COREAUDIO)
   "CoreAudio";
-#endif
-#if !defined(ALSA) && !defined(COREAUDIO) && !defined(PULSEAUDIO)
-  "(unkown)";
+#else
+  "(unknown)";
 #endif

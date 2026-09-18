@@ -1,0 +1,1367 @@
+/* Copyright (C)
+* 2024-2026 - Heiko Amft, DL1BZ (Project deskHPSDR)
+*
+* SPDX-License-Identifier: GPL-3.0-or-later
+*
+*   This program is free software: you can redistribute it and/or modify
+*   it under the terms of the GNU General Public License as published by
+*   the Free Software Foundation, either version 3 of the License, or
+*   (at your option) any later version.
+*
+*   This program is distributed in the hope that it will be useful,
+*   but WITHOUT ANY WARRANTY; without even the implied warranty of
+*   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+*   GNU General Public License for more details.
+*
+*   You should have received a copy of the GNU General Public License
+*   along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*
+*/
+
+//
+// Shared buffered audio engine for native and miniaudio backends.
+//
+
+#include <gtk/gtk.h>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <math.h>
+#include <pthread.h>
+#include <sched.h>
+#include <semaphore.h>
+
+#include "audio_backend.h"
+
+#include "radio.h"
+#include "receiver.h"
+#include "mode.h"
+#include "audio.h"
+#include "message.h"
+#include "sliders.h"
+#include "vfo.h"
+#include "tci_audio.h"
+
+static void *audio_backend_input_handle = NULL;
+
+int n_input_devices;
+AUDIO_DEVICE input_devices[MAX_AUDIO_DEVICES];
+int n_output_devices;
+AUDIO_DEVICE output_devices[MAX_AUDIO_DEVICES];
+
+GMutex audio_mutex;
+static volatile gint audio_xrun_count = 0;
+static volatile gint output_ring_primed[8] = { 0 };
+static volatile gint output_ring_starved[8] = { 0 };
+static atomic_uint rx_ring_diag_underruns[8];
+static atomic_uint rx_ring_diag_low_corrections[8];
+static atomic_uint rx_ring_diag_high_corrections[8];
+static double rx_ring_consumer_phase[8];
+static gboolean rx_ring_consumer_catchup[8];
+
+guint64 audio_get_xrun_count(void) {
+  return (guint64) g_atomic_int_get(&audio_xrun_count);
+}
+
+
+//
+// We now use callback functions to provide the "headphone" audio data,
+// and therefore can control the latency.
+// RX audio samples are put into a ring buffer and "fetched" therefreom
+// by the audio backend output callback.
+//
+// RX audio and CW sidetone use separate ring buffers. On an RX/TX transition
+// the RX ring is no longer discarded: its WDSP-slewed tail is allowed to drain
+// naturally while the sidetone starts from its own low-latency ring.
+// The sidetone filling is kept close to an explicit low-latency target to
+// reduce underrun risk and avoid larger latency swings.
+// Of course, a small audio backend buffer size (128 sample) helps
+// keeping the latency small. The CW buffer is kept around CW_LAT_TARGET
+// with a narrow correction window to reduce occasional underruns/clicks.
+//
+// Experiments indicate that we can indeed keep the ring buffer about half filling
+// during RX and quite empty during CW-TX.
+//
+//
+
+
+#define AUDIO_TEST_SAMPLE_RATE 48000
+#define AUDIO_TEST_TONE_FRAMES (2 * AUDIO_TEST_SAMPLE_RATE)
+#define AUDIO_TEST_TOTAL_FRAMES (3 * AUDIO_TEST_TONE_FRAMES)
+#define AUDIO_TEST_FADE_FRAMES 240
+#define AUDIO_TEST_LEVEL 0.1f
+
+static float audio_test_sample_for_frame(int frame) {
+  static const double frequencies[3] = { 600.0, 800.0, 1000.0 };
+  int tone = frame / AUDIO_TEST_TONE_FRAMES;
+  int tone_frame = frame % AUDIO_TEST_TONE_FRAMES;
+  if (tone < 0 || tone >= 3) {
+    return 0.0f;
+  }
+  float envelope = 1.0f;
+  if (tone_frame < AUDIO_TEST_FADE_FRAMES) {
+    envelope = (float)tone_frame / (float)AUDIO_TEST_FADE_FRAMES;
+  } else if (tone_frame >= AUDIO_TEST_TONE_FRAMES - AUDIO_TEST_FADE_FRAMES) {
+    envelope = (float)(AUDIO_TEST_TONE_FRAMES - 1 - tone_frame) /
+               (float)AUDIO_TEST_FADE_FRAMES;
+  }
+  double phase = 6.28318530717958647692 * frequencies[tone] *
+                 (double)tone_frame / (double)AUDIO_TEST_SAMPLE_RATE;
+  return AUDIO_TEST_LEVEL * envelope * (float)sin(phase);
+}
+
+#define MY_RING_BUFFER_SIZE 48000
+
+#define RX_LAT_LOW            768
+#define RX_LAT_TARGET        1536
+#define RX_LAT_CATCHUP_STOP_MARGIN   1024
+#define RX_LAT_CATCHUP_START_MARGIN  3072
+#define RX_LAT_CATCHUP_RATE          1.01
+
+static inline void rx_audio_latency_limits(int *low, int *target) {
+  *low = RX_LAT_LOW;
+  *target = RX_LAT_TARGET;
+  if (protocol != NEW_PROTOCOL ||
+      !g_atomic_int_get(&rx_audio_network_reserve_enabled)) {
+    return;
+  }
+  int reserve_ms = g_atomic_int_get(&rx_audio_network_reserve_ms);
+  if (reserve_ms < 5) {
+    reserve_ms = 5;
+  } else if (reserve_ms > 500) {
+    reserve_ms = 500;
+  }
+  /*
+   * Local RX audio is delivered to the audio backend at 48 kHz.  Above the
+   * normal low-latency operating point, use 2/3 of the requested
+   * reserve as low-water.  HIGH handling is deliberately separate:
+   * the ring itself is now the reserve for temporary scheduling bursts.
+   */
+  int reserve_target = reserve_ms * 48;
+  if (reserve_target <= RX_LAT_TARGET) {
+    return;
+  }
+  *target = reserve_target;
+  *low = (reserve_target * 2) / 3;
+}
+
+static inline void rx_audio_catchup_limits(int target, int *stop, int *start) {
+  *stop = target + RX_LAT_CATCHUP_STOP_MARGIN;
+  *start = target + RX_LAT_CATCHUP_START_MARGIN;
+  if (*start >= MY_RING_BUFFER_SIZE - 2) {
+    *start = MY_RING_BUFFER_SIZE - 3;
+  }
+  if (*stop >= *start) {
+    *stop = *start - 1;
+  }
+}
+
+
+
+#define CW_LAT_LOW            128
+#define CW_LAT_TARGET         256
+#define CW_LAT_HIGH           384
+
+#define MIC_LAT_LOW            192
+#define MIC_LAT_TARGET         384
+#define MIC_LAT_HIGH           768
+#define MIC_LAT_CORRECTION_RATE 0.01
+
+//
+// Ring buffer for "local microphone" samples stored locally here.
+// NOTE: lead large buffer for some "loopback" devices which produce
+//       samples in large chunks if fed from digimode programs.
+//
+static float *mic_ring_buffer = NULL;
+static atomic_int mic_ring_outpt;
+static atomic_int mic_ring_inpt;
+static atomic_int mic_ring_reset_pending;
+static atomic_int mic_ring_reset_frames;
+static atomic_int mic_ring_silence_frames;
+static atomic_uint mic_ring_diag_generation;
+static atomic_uint mic_ring_underruns;
+static atomic_uint mic_ring_overruns;
+static atomic_uint mic_ring_diag_low_corrections;
+static atomic_uint mic_ring_diag_high_corrections;
+static double mic_ring_consumer_phase = 0.0;
+static int mic_ring_consumer_correction = 0;
+static atomic_uint cw_ring_diag_underruns;
+
+
+int audio_get_rx_buffer_diag(RECEIVER *rx, AUDIO_BUFFER_DIAG *diag) {
+  if (rx == NULL || diag == NULL) {
+    return 0;
+  }
+  memset(diag, 0, sizeof(*diag));
+  diag->capacity = MY_RING_BUFFER_SIZE;
+  rx_audio_latency_limits(&diag->low, &diag->target);
+  int catchup_stop;
+  rx_audio_catchup_limits(diag->target, &catchup_stop, &diag->high);
+  if (rx->local_audio_buffer == NULL || rx->audio_backend_output_handle == NULL) {
+    return 1;
+  }
+  int inpt = atomic_load_explicit(&rx->local_audio_buffer_inpt, memory_order_acquire);
+  int outpt = atomic_load_explicit(&rx->local_audio_buffer_outpt, memory_order_acquire);
+  int queued = inpt - outpt;
+  if (queued < 0) {
+    queued += MY_RING_BUFFER_SIZE;
+  }
+  diag->queued = queued;
+  if (rx->id >= 0 && rx->id < 8) {
+    diag->low_corrections =
+            atomic_load_explicit(&rx_ring_diag_low_corrections[rx->id], memory_order_relaxed);
+    diag->high_corrections =
+            atomic_load_explicit(&rx_ring_diag_high_corrections[rx->id], memory_order_relaxed);
+  }
+  diag->available = 1;
+  return 1;
+}
+
+int audio_get_mic_buffer_diag(AUDIO_BUFFER_DIAG *diag) {
+  if (diag == NULL) {
+    return 0;
+  }
+  memset(diag, 0, sizeof(*diag));
+  diag->capacity = MY_RING_BUFFER_SIZE;
+  diag->low = MIC_LAT_LOW;
+  diag->target = MIC_LAT_TARGET;
+  diag->high = MIC_LAT_HIGH;
+  if (mic_ring_buffer == NULL) {
+    return 1;
+  }
+  int inpt = atomic_load_explicit(&mic_ring_inpt, memory_order_acquire);
+  int outpt = atomic_load_explicit(&mic_ring_outpt, memory_order_acquire);
+  int queued = inpt - outpt;
+  if (queued < 0) {
+    queued += MY_RING_BUFFER_SIZE;
+  }
+  diag->queued = queued;
+  diag->low_corrections =
+          atomic_load_explicit(&mic_ring_diag_low_corrections, memory_order_relaxed);
+  diag->high_corrections =
+          atomic_load_explicit(&mic_ring_diag_high_corrections, memory_order_relaxed);
+  diag->available = 1;
+  return 1;
+}
+
+int audio_get_cw_buffer_diag(RECEIVER *rx, AUDIO_BUFFER_DIAG *diag) {
+  if (rx == NULL || diag == NULL) {
+    return 0;
+  }
+  memset(diag, 0, sizeof(*diag));
+  diag->capacity = MY_RING_BUFFER_SIZE;
+  diag->target = CW_LAT_TARGET;
+  if (rx->sidetone_buffer == NULL || rx->audio_backend_output_handle == NULL) {
+    return 1;
+  }
+  int inpt = atomic_load_explicit(&rx->sidetone_buffer_inpt, memory_order_acquire);
+  int outpt = atomic_load_explicit(&rx->sidetone_buffer_outpt, memory_order_acquire);
+  int queued = inpt - outpt;
+  if (queued < 0) {
+    queued += MY_RING_BUFFER_SIZE;
+  }
+  diag->queued = queued;
+  diag->available = 1;
+  return 1;
+}
+
+
+//
+// Request a ring reset without modifying the consumer-owned output pointer.
+// The audio backend callback is the producer; the protocol mic path is the
+// consumer. The consumer performs the actual flush on its next read and then
+// returns the requested amount of silence before consuming new mic samples.
+//
+static void local_mic_ring_request_reset(int silence_frames) {
+  if (silence_frames < 0) {
+    silence_frames = 0;
+  }
+  if (silence_frames >= MY_RING_BUFFER_SIZE) {
+    silence_frames = MY_RING_BUFFER_SIZE - 1;
+  }
+  atomic_store_explicit(&mic_ring_reset_frames, silence_frames, memory_order_relaxed);
+  atomic_store_explicit(&mic_ring_reset_pending, 1, memory_order_release);
+}
+
+void audio_reset_mic_buffer(void) {
+  /*
+   * A protocol restart temporarily stops the P2 mic consumer while the audio backend
+   * continues to produce samples.  Drop that stale backlog on the consumer's
+   * next read using the existing producer/consumer reset handshake, while
+   * retaining 20 ms (960 frames at 48 kHz) of reserve.
+   */
+  local_mic_ring_request_reset(960);
+}
+
+
+static inline void local_mic_ring_push(float sample) {
+  int inpt = atomic_load_explicit(&mic_ring_inpt, memory_order_relaxed);
+  int outpt = atomic_load_explicit(&mic_ring_outpt, memory_order_acquire);
+  int newpt = inpt + 1;
+  if (newpt == MY_RING_BUFFER_SIZE) {
+    newpt = 0;
+  }
+  if (newpt == outpt) {
+    atomic_fetch_add_explicit(&mic_ring_overruns, 1U, memory_order_relaxed);
+    return;
+  }
+  mic_ring_buffer[inpt] = sample;
+  atomic_store_explicit(&mic_ring_inpt, newpt, memory_order_release);
+}
+
+static inline float local_mic_ring_pop(void) {
+  int outpt;
+  int inpt;
+  float sample;
+  if (mic_ring_buffer == NULL) {
+    return 0.0f;
+  }
+  //
+  // Producer-to-consumer reset handshake. Only the consumer advances outpt.
+  // Flush everything queued before the reset request and provide the desired
+  // silence locally, while the producer can already refill the ring.
+  //
+  if (atomic_exchange_explicit(&mic_ring_reset_pending, 0, memory_order_acq_rel)) {
+    int reset_frames = atomic_load_explicit(&mic_ring_reset_frames, memory_order_relaxed);
+    inpt = atomic_load_explicit(&mic_ring_inpt, memory_order_acquire);
+    atomic_store_explicit(&mic_ring_outpt, inpt, memory_order_release);
+    atomic_store_explicit(&mic_ring_silence_frames, reset_frames, memory_order_relaxed);
+    mic_ring_consumer_phase = 0.0;
+    mic_ring_consumer_correction = 0;
+    atomic_fetch_add_explicit(&mic_ring_diag_generation, 1U, memory_order_release);
+  }
+  int silence_frames = atomic_load_explicit(&mic_ring_silence_frames, memory_order_relaxed);
+  if (silence_frames > 0) {
+    atomic_store_explicit(&mic_ring_silence_frames, silence_frames - 1, memory_order_relaxed);
+    return 0.0f;
+  }
+  outpt = atomic_load_explicit(&mic_ring_outpt, memory_order_relaxed);
+  inpt = atomic_load_explicit(&mic_ring_inpt, memory_order_acquire);
+  int queued = inpt - outpt;
+  if (queued < 0) {
+    queued += MY_RING_BUFFER_SIZE;
+  }
+  if (queued == 0) {
+    mic_ring_consumer_phase = 0.0;
+    mic_ring_consumer_correction = -1;
+    atomic_fetch_add_explicit(&mic_ring_underruns, 1U, memory_order_relaxed);
+    return 0.0f;
+  }
+  /*
+   * Audio input devices and the SDR TX path both nominally run at 48 kHz,
+   * but their physical clocks are independent. Keep the microphone ring near
+   * the existing 8 ms operating point by changing only the consumer rate by
+   * +/-1 percent outside a hysteresis window. Linear interpolation avoids
+   * hard sample drops or repetitions while correcting long-term clock drift.
+   */
+  if (mic_ring_consumer_correction < 0) {
+    if (queued >= MIC_LAT_TARGET) {
+      mic_ring_consumer_correction = 0;
+      mic_ring_consumer_phase = 0.0;
+    }
+  } else if (mic_ring_consumer_correction > 0) {
+    if (queued <= MIC_LAT_TARGET) {
+      mic_ring_consumer_correction = 0;
+      mic_ring_consumer_phase = 0.0;
+    }
+  } else if (queued <= MIC_LAT_LOW) {
+    mic_ring_consumer_correction = -1;
+  } else if (queued >= MIC_LAT_HIGH) {
+    mic_ring_consumer_correction = 1;
+  }
+  sample = mic_ring_buffer[outpt];
+  if (queued > 1 && mic_ring_consumer_phase > 0.0) {
+    int nextpt = outpt + 1;
+    if (nextpt == MY_RING_BUFFER_SIZE) {
+      nextpt = 0;
+    }
+    sample += (mic_ring_buffer[nextpt] - sample) * (float)mic_ring_consumer_phase;
+  }
+  double step = 1.0;
+  if (mic_ring_consumer_correction < 0) {
+    step -= MIC_LAT_CORRECTION_RATE;
+  } else if (mic_ring_consumer_correction > 0) {
+    step += MIC_LAT_CORRECTION_RATE;
+  }
+  mic_ring_consumer_phase += step;
+  int advance = (int)mic_ring_consumer_phase;
+  mic_ring_consumer_phase -= (double)advance;
+  if (advance > queued) {
+    advance = queued;
+    mic_ring_consumer_phase = 0.0;
+  }
+  if (advance == 0) {
+    atomic_fetch_add_explicit(&mic_ring_diag_low_corrections, 1U, memory_order_relaxed);
+  } else if (advance > 1) {
+    atomic_fetch_add_explicit(&mic_ring_diag_high_corrections,
+                              (unsigned int)(advance - 1), memory_order_relaxed);
+  }
+  outpt += advance;
+  while (outpt >= MY_RING_BUFFER_SIZE) {
+    outpt -= MY_RING_BUFFER_SIZE;
+  }
+  atomic_store_explicit(&mic_ring_outpt, outpt, memory_order_release);
+  return sample;
+}
+
+static void *audio_backend_tci_monitor_handle = NULL;
+
+
+static GMutex tci_monitor_mutex;
+
+static gboolean audio_backend_device_watch_cb(gpointer data) {
+  (void) data;
+  /*
+   * DeviceIsAlive is updated by audio backend device monitoring. All state
+   * changes and close/dispose operations are deliberately done here on the
+   * GLib main loop, never from an audio backend callback.
+   */
+  for (int i = 0; i < receivers; i++) {
+    RECEIVER *rx = receiver[i];
+    if (rx == NULL) {
+      continue;
+    }
+    int device_lost;
+    g_mutex_lock(&rx->local_audio_mutex);
+    device_lost = rx->audio_backend_output_handle != NULL &&
+                  !audio_backend_output_is_alive(rx->audio_backend_output_handle);
+    g_mutex_unlock(&rx->local_audio_mutex);
+    if (device_lost) {
+      t_print("%s: Audio output device lost rx=%d name=%s -> Local Audio OFF\n",
+              __func__, rx->id, rx->audio_name);
+      rx->local_audio = 0;
+      audio_close_output(rx);
+    }
+  }
+  int input_lost;
+  g_mutex_lock(&audio_mutex);
+  input_lost = audio_backend_input_handle != NULL &&
+               !audio_backend_input_is_alive(audio_backend_input_handle);
+  g_mutex_unlock(&audio_mutex);
+  if (input_lost) {
+    t_print("%s: Audio input device lost name=%s -> Local Microphone OFF\n",
+            __func__,
+            transmitter != NULL ? transmitter->microphone_name : "(unknown)");
+    if (transmitter != NULL) {
+      transmitter->local_microphone = 0;
+    }
+    audio_close_input();
+    update_slider_local_mic_button();
+  }
+  int monitor_lost;
+  g_mutex_lock(&tci_monitor_mutex);
+  monitor_lost = audio_backend_tci_monitor_handle != NULL &&
+                 !audio_backend_tci_monitor_is_alive(audio_backend_tci_monitor_handle);
+  g_mutex_unlock(&tci_monitor_mutex);
+  if (monitor_lost) {
+    t_print("%s: Audio TCI monitor device lost -> TCI Audio Monitor OFF\n",
+            __func__);
+    tci_audio_monitor = 0;
+    audio_close_tci_monitor();
+  }
+  return G_SOURCE_CONTINUE;
+}
+
+static void audio_backend_start_device_watch(void) {
+  static gsize started = 0;
+  if (g_once_init_enter(&started)) {
+    g_timeout_add(250, audio_backend_device_watch_cb, NULL);
+    g_once_init_leave(&started, 1);
+  }
+}
+
+
+void audio_release_cards(void) {
+  audio_close_tci_monitor();
+  g_mutex_lock(&audio_mutex);
+  for (int i = 0; i < n_input_devices; i++) {
+    g_free(input_devices[i].name);
+    g_free(input_devices[i].description);
+  }
+  for (int i = 0; i < n_output_devices; i++) {
+    g_free(output_devices[i].name);
+    g_free(output_devices[i].description);
+  }
+  n_input_devices  = 0;
+  n_output_devices = 0;
+  memset(input_devices, 0, sizeof(input_devices));
+  memset(output_devices, 0, sizeof(output_devices));
+  g_mutex_unlock(&audio_mutex);
+}
+
+//
+// AUDIO_GET_CARDS
+//
+// Enumerate suitable audio backend input and output devices.
+//
+void audio_get_cards(void) {
+  static gsize mutex_inited = 0;
+  if (g_once_init_enter(&mutex_inited)) {
+    g_mutex_init(&audio_mutex);
+    g_mutex_init(&tci_monitor_mutex);
+    g_once_init_leave(&mutex_inited, 1);
+  }
+  audio_backend_start_device_watch();
+  t_print("%s: audio backend call audio_get_cards\n", __func__);
+  if (audio_backend_get_cards() != 0) {
+    t_print("%s: audio backend device enumeration failed\n", __func__);
+  }
+}
+
+
+//
+// AUDIO_OPEN_INPUT
+//
+// Open audio backend input connected to the TX microphone.
+//
+
+
+int audio_open_input(void) {
+  t_print("%s: audio backend call audio_open_input\n", __func__);
+  if (!can_transmit) {
+    return -1;
+  }
+  if (transmitter == NULL || transmitter->microphone_name[0] == '\0') {
+    return -1;
+  }
+  g_mutex_lock(&audio_mutex);
+  if (audio_backend_input_handle != NULL || mic_ring_buffer != NULL) {
+    g_mutex_unlock(&audio_mutex);
+    return 0;
+  }
+  mic_ring_buffer = (float *) g_new(float, MY_RING_BUFFER_SIZE);
+  if (mic_ring_buffer == NULL) {
+    g_mutex_unlock(&audio_mutex);
+    t_print("%s: alloc buffer failed.\n", __func__);
+    return -1;
+  }
+  atomic_store_explicit(&mic_ring_outpt, 0, memory_order_relaxed);
+  atomic_store_explicit(&mic_ring_inpt, 0, memory_order_relaxed);
+  atomic_store_explicit(&mic_ring_reset_pending, 0, memory_order_relaxed);
+  atomic_store_explicit(&mic_ring_reset_frames, 0, memory_order_relaxed);
+  atomic_store_explicit(&mic_ring_silence_frames, 0, memory_order_relaxed);
+  atomic_store_explicit(&mic_ring_underruns, 0U, memory_order_relaxed);
+  atomic_store_explicit(&mic_ring_overruns, 0U, memory_order_relaxed);
+  atomic_store_explicit(&mic_ring_diag_low_corrections, 0U, memory_order_relaxed);
+  atomic_store_explicit(&mic_ring_diag_high_corrections, 0U, memory_order_relaxed);
+  mic_ring_consumer_phase = 0.0;
+  mic_ring_consumer_correction = 0;
+  g_mutex_unlock(&audio_mutex);
+  void *handle = audio_backend_input_open(transmitter->microphone_name);
+  if (handle == NULL) {
+    g_mutex_lock(&audio_mutex);
+    g_free(mic_ring_buffer);
+    mic_ring_buffer = NULL;
+    atomic_store_explicit(&mic_ring_outpt, 0, memory_order_relaxed);
+    atomic_store_explicit(&mic_ring_inpt, 0, memory_order_relaxed);
+    atomic_store_explicit(&mic_ring_reset_frames, 0, memory_order_relaxed);
+    atomic_store_explicit(&mic_ring_silence_frames, 0, memory_order_relaxed);
+    g_mutex_unlock(&audio_mutex);
+    return -1;
+  }
+  g_mutex_lock(&audio_mutex);
+  audio_backend_input_handle = handle;
+  g_mutex_unlock(&audio_mutex);
+  t_print("%s: audio backend input name=%s\n", __func__, transmitter->microphone_name);
+  return 0;
+}
+
+
+//
+//
+int audio_open_tci_monitor(const char *audio_name) {
+  if (audio_name == NULL || audio_name[0] == '\0') {
+    return -1;
+  }
+  g_mutex_lock(&tci_monitor_mutex);
+  if (audio_backend_tci_monitor_handle != NULL) {
+    g_mutex_unlock(&tci_monitor_mutex);
+    return 0;
+  }
+  g_mutex_unlock(&tci_monitor_mutex);
+  //
+  // Enable/reset the producer before the audio backend starts consuming.
+  //
+  tci_audio_monitor_set_active(1);
+  int channels = 0;
+  void *handle = audio_backend_tci_monitor_open(audio_name, &channels);
+  if (handle == NULL) {
+    tci_audio_monitor_set_active(0);
+    return -1;
+  }
+  g_mutex_lock(&tci_monitor_mutex);
+  audio_backend_tci_monitor_handle = handle;
+  g_mutex_unlock(&tci_monitor_mutex);
+  t_print("%s: opened audio backend TCI monitor name=%s channels=%d\n",
+          __func__, audio_name, channels);
+  return 0;
+}
+
+
+void audio_close_tci_monitor(void) {
+  void *handle = NULL;
+  g_mutex_lock(&tci_monitor_mutex);
+  handle = audio_backend_tci_monitor_handle;
+  audio_backend_tci_monitor_handle = NULL;
+  g_mutex_unlock(&tci_monitor_mutex);
+  //
+  // Stop the RT consumer first, then disable/reset the producer ring.
+  //
+  audio_backend_tci_monitor_close(handle);
+  tci_audio_monitor_set_active(0);
+}
+
+
+//
+//
+int audio_test_start(RECEIVER *rx) {
+  if (rx == NULL || !rx->local_audio) {
+    return -1;
+  }
+  g_mutex_lock(&rx->local_audio_mutex);
+  if (rx->audio_backend_output_handle == NULL) {
+    g_mutex_unlock(&rx->local_audio_mutex);
+    return -1;
+  }
+  if (atomic_load_explicit(&rx->audio_test_active, memory_order_acquire)) {
+    g_mutex_unlock(&rx->local_audio_mutex);
+    return 0;
+  }
+  // Drop queued RX and sidetone audio. The test is generated in the
+  // audio backend render callback and therefore bypasses WDSP completely.
+  int rx_in = atomic_load_explicit(&rx->local_audio_buffer_inpt, memory_order_acquire);
+  atomic_store_explicit(&rx->local_audio_buffer_outpt, rx_in, memory_order_release);
+  int st_in = atomic_load_explicit(&rx->sidetone_buffer_inpt, memory_order_acquire);
+  atomic_store_explicit(&rx->sidetone_buffer_outpt, st_in, memory_order_release);
+  atomic_store_explicit(&rx->audio_test_frame, 0, memory_order_relaxed);
+  atomic_store_explicit(&rx->audio_test_active, 1, memory_order_release);
+  if (rx->id >= 0 && rx->id < (int)(sizeof(output_ring_primed) / sizeof(output_ring_primed[0]))) {
+    g_atomic_int_set(&output_ring_primed[rx->id], 0);
+    g_atomic_int_set(&output_ring_starved[rx->id], 0);
+    rx_ring_consumer_phase[rx->id] = 0.0;
+    rx_ring_consumer_catchup[rx->id] = FALSE;
+  }
+  g_mutex_unlock(&rx->local_audio_mutex);
+  return 0;
+}
+
+void audio_test_stop(RECEIVER *rx) {
+  if (rx == NULL) {
+    return;
+  }
+  atomic_store_explicit(&rx->audio_test_active, 0, memory_order_release);
+  atomic_store_explicit(&rx->audio_test_frame, 0, memory_order_relaxed);
+}
+
+void audio_render_local_output(RECEIVER *rx, float *out, unsigned int frames, int channels) {
+  gboolean ring_underrun = FALSE;
+  gboolean ring_had_audio = FALSE;
+  if (rx == NULL || out == NULL || (channels != 1 && channels != 2)) {
+    return;
+  }
+  if (atomic_load_explicit(&rx->audio_test_active, memory_order_acquire)) {
+    for (unsigned int i = 0; i < frames; i++) {
+      int frame = atomic_fetch_add_explicit(&rx->audio_test_frame, 1, memory_order_relaxed);
+      float sample = 0.0f;
+      if (frame < AUDIO_TEST_TOTAL_FRAMES) {
+        sample = audio_test_sample_for_frame(frame);
+      }
+      if (channels == 2) {
+        switch (rx->audio_channel) {
+        case LEFT:
+          *out++ = sample;
+          *out++ = 0.0f;
+          break;
+        case RIGHT:
+          *out++ = 0.0f;
+          *out++ = sample;
+          break;
+        case STEREO:
+        default:
+          *out++ = sample;
+          *out++ = sample;
+          break;
+        }
+      } else {
+        *out++ = sample;
+      }
+      if (frame + 1 >= AUDIO_TEST_TOTAL_FRAMES) {
+        atomic_store_explicit(&rx->audio_test_active, 0, memory_order_release);
+      }
+    }
+    return;
+  }
+  gboolean valid_rx_id = rx->id >= 0 && rx->id < (int)(sizeof(output_ring_primed) / sizeof(output_ring_primed[0]));
+  gboolean ring_was_primed = valid_rx_id && g_atomic_int_get(&output_ring_primed[rx->id]);
+  /*
+   * This function deliberately takes no mutex. Ring ownership is SPSC:
+   * receiver/CW code advances producer indices, the audio callback advances
+   * consumer indices. Buffer lifetime is protected by stopping the backend
+   * callback before audio_close_output() frees the rings.
+   */
+  float *rx_buffer = rx->local_audio_buffer;
+  float *st_buffer = rx->sidetone_buffer;
+  if (rx_buffer != NULL && st_buffer != NULL) {
+    int rx_out = atomic_load_explicit(&rx->local_audio_buffer_outpt, memory_order_relaxed);
+    int st_out = atomic_load_explicit(&rx->sidetone_buffer_outpt, memory_order_relaxed);
+    double rx_phase = 0.0;
+    gboolean rx_catchup = FALSE;
+    if (valid_rx_id) {
+      rx_phase = rx_ring_consumer_phase[rx->id];
+      rx_catchup = rx_ring_consumer_catchup[rx->id];
+      if (!g_atomic_int_get(&audio_rx_latency_correction_enabled) ||
+          rx->local_audio_cw_active) {
+        rx_phase = 0.0;
+        rx_catchup = FALSE;
+      } else {
+        int rx_in = atomic_load_explicit(&rx->local_audio_buffer_inpt, memory_order_acquire);
+        int queued = rx_in - rx_out;
+        if (queued < 0) {
+          queued += MY_RING_BUFFER_SIZE;
+        }
+        int rx_lat_low;
+        int rx_lat_target;
+        int catchup_stop;
+        int catchup_start;
+        rx_audio_latency_limits(&rx_lat_low, &rx_lat_target);
+        rx_audio_catchup_limits(rx_lat_target, &catchup_stop, &catchup_start);
+        (void)rx_lat_low;
+        if (!rx_catchup && queued >= catchup_start) {
+          rx_catchup = TRUE;
+        } else if (rx_catchup && queued <= catchup_stop) {
+          rx_phase = 0.0;
+          rx_catchup = FALSE;
+        }
+      }
+    }
+    for (unsigned int i = 0; i < frames; i++) {
+      float left = 0.0f;
+      float right = 0.0f;
+      float sidetone = 0.0f;
+      int rx_in = atomic_load_explicit(&rx->local_audio_buffer_inpt, memory_order_acquire);
+      int st_in = atomic_load_explicit(&rx->sidetone_buffer_inpt, memory_order_acquire);
+      if (rx_in != rx_out) {
+        ring_had_audio = TRUE;
+        left = rx_buffer[2 * rx_out];
+        right = rx_buffer[2 * rx_out + 1];
+        int queued = rx_in - rx_out;
+        if (queued < 0) {
+          queued += MY_RING_BUFFER_SIZE;
+        }
+        if (rx_catchup && queued > 1) {
+          int rx_next = rx_out + 1;
+          if (rx_next >= MY_RING_BUFFER_SIZE) {
+            rx_next = 0;
+          }
+          left += (rx_buffer[2 * rx_next] - left) * (float)rx_phase;
+          right += (rx_buffer[2 * rx_next + 1] - right) * (float)rx_phase;
+        }
+        double step = rx_catchup ? RX_LAT_CATCHUP_RATE : 1.0;
+        rx_phase += step;
+        int advance = (int)rx_phase;
+        rx_phase -= (double)advance;
+        if (advance > queued) {
+          advance = queued;
+          rx_phase = 0.0;
+        }
+        rx_out += advance;
+        while (rx_out >= MY_RING_BUFFER_SIZE) {
+          rx_out -= MY_RING_BUFFER_SIZE;
+        }
+        if (valid_rx_id && advance > 1) {
+          atomic_fetch_add_explicit(&rx_ring_diag_high_corrections[rx->id],
+                                    (unsigned int)(advance - 1), memory_order_relaxed);
+        }
+        atomic_store_explicit(&rx->local_audio_buffer_outpt, rx_out, memory_order_release);
+      } else {
+        rx_phase = 0.0;
+        rx_catchup = FALSE;
+        if (st_in == st_out) {
+          ring_underrun = TRUE;
+          if (rx->local_audio_cw_active) {
+            atomic_fetch_add_explicit(&cw_ring_diag_underruns, 1U, memory_order_relaxed);
+          }
+        }
+      }
+      if (st_in != st_out) {
+        ring_had_audio = TRUE;
+        sidetone = st_buffer[st_out];
+        st_out++;
+        if (st_out >= MY_RING_BUFFER_SIZE) {
+          st_out = 0;
+        }
+        atomic_store_explicit(&rx->sidetone_buffer_outpt, st_out, memory_order_release);
+      }
+      left += sidetone;
+      right += sidetone;
+      if (left > 1.0f) { left = 1.0f; }
+      if (left < -1.0f) { left = -1.0f; }
+      if (right > 1.0f) { right = 1.0f; }
+      if (right < -1.0f) { right = -1.0f; }
+      if (channels == 2) {
+        *out++ = left;
+        *out++ = right;
+      } else {
+        float mono;
+        switch (rx->audio_channel) {
+        case LEFT:
+          mono = left;
+          break;
+        case RIGHT:
+          mono = right;
+          break;
+        case STEREO:
+        default:
+          mono = 0.5f * (left + right);
+          break;
+        }
+        *out++ = mono;
+      }
+    }
+    if (valid_rx_id) {
+      rx_ring_consumer_phase[rx->id] = rx_phase;
+      rx_ring_consumer_catchup[rx->id] = rx_catchup;
+    }
+  } else {
+    memset(out, 0, (size_t) frames * (size_t) channels * sizeof(float));
+  }
+  if (valid_rx_id) {
+    if (ring_underrun && ring_was_primed && rx->local_audio
+        && !g_atomic_int_get(&output_ring_starved[rx->id])) {
+      g_atomic_int_inc(&audio_xrun_count);
+      atomic_fetch_add_explicit(&rx_ring_diag_underruns[rx->id], 1U, memory_order_relaxed);
+    }
+    if (ring_had_audio) {
+      g_atomic_int_set(&output_ring_primed[rx->id], 1);
+    }
+    g_atomic_int_set(&output_ring_starved[rx->id], ring_underrun);
+  } else if (ring_underrun && rx->local_audio) {
+    g_atomic_int_inc(&audio_xrun_count);
+  }
+}
+
+
+//
+// Feed audio backend microphone samples into the shared mic ring.
+//
+void audio_process_local_mic_input(const float *samples, unsigned int frames) {
+  static int last_was_tx = 0;
+  if (samples == NULL || mic_ring_buffer == NULL) {
+    return;
+  }
+  //
+  // Normally there is a slight mis-match between the 48kHz sample
+  // rate of the microphone device and the 48kHz rate of the HPSDR
+  // device. Keep the existing TX/RX transition reset behaviour.
+  //
+  if (!radio_is_transmitting()) {
+    if (last_was_tx) {
+      last_was_tx = 0;
+      local_mic_ring_request_reset(960);
+    }
+  } else {
+    if (!last_was_tx) {
+      //
+      // RX -> TX: discard microphone samples accumulated while receiving.
+      // Do not add silence here; TX should start with the freshest available
+      // Audio backend input samples.
+      //
+      local_mic_ring_request_reset(384);
+    }
+    last_was_tx = 1;
+  }
+  for (unsigned int i = 0; i < frames; i++) {
+    local_mic_ring_push(samples[i]);
+  }
+}
+
+//
+// Utility function for retrieving mic samples
+// from ring buffer
+//
+float audio_get_next_mic_sample(void) {
+  static gint64 next_log_us = 0;
+  static int min_queued = MY_RING_BUFFER_SIZE;
+  static int max_queued = 0;
+  static unsigned int diag_generation_seen = 0;
+  float sample = local_mic_ring_pop();
+  if (!radio_is_transmitting()) {
+    next_log_us = 0;
+    min_queued = MY_RING_BUFFER_SIZE;
+    max_queued = 0;
+    diag_generation_seen =
+            atomic_load_explicit(&mic_ring_diag_generation, memory_order_acquire);
+    atomic_store_explicit(&mic_ring_underruns, 0U, memory_order_relaxed);
+    atomic_store_explicit(&mic_ring_overruns, 0U, memory_order_relaxed);
+    atomic_store_explicit(&mic_ring_diag_low_corrections, 0U, memory_order_relaxed);
+    atomic_store_explicit(&mic_ring_diag_high_corrections, 0U, memory_order_relaxed);
+    return sample;
+  }
+  unsigned int diag_generation =
+          atomic_load_explicit(&mic_ring_diag_generation, memory_order_acquire);
+  if (diag_generation != diag_generation_seen) {
+    diag_generation_seen = diag_generation;
+    next_log_us = 0;
+    min_queued = MY_RING_BUFFER_SIZE;
+    max_queued = 0;
+    atomic_store_explicit(&mic_ring_underruns, 0U, memory_order_relaxed);
+    atomic_store_explicit(&mic_ring_overruns, 0U, memory_order_relaxed);
+    atomic_store_explicit(&mic_ring_diag_low_corrections, 0U, memory_order_relaxed);
+    atomic_store_explicit(&mic_ring_diag_high_corrections, 0U, memory_order_relaxed);
+  }
+  int outpt = atomic_load_explicit(&mic_ring_outpt, memory_order_acquire);
+  int inpt = atomic_load_explicit(&mic_ring_inpt, memory_order_acquire);
+  int queued = inpt - outpt;
+  if (queued < 0) {
+    queued += MY_RING_BUFFER_SIZE;
+  }
+  if (queued < min_queued) {
+    min_queued = queued;
+  }
+  if (queued > max_queued) {
+    max_queued = queued;
+  }
+  gint64 now_us = g_get_monotonic_time();
+  if (next_log_us == 0) {
+    next_log_us = now_us + G_USEC_PER_SEC;
+  } else if (now_us >= next_log_us) {
+    unsigned int underruns = atomic_exchange_explicit(&mic_ring_underruns, 0U, memory_order_relaxed);
+    unsigned int overruns = atomic_exchange_explicit(&mic_ring_overruns, 0U, memory_order_relaxed);
+    unsigned int low_corr = atomic_exchange_explicit(&mic_ring_diag_low_corrections, 0U, memory_order_relaxed);
+    unsigned int high_corr = atomic_exchange_explicit(&mic_ring_diag_high_corrections, 0U, memory_order_relaxed);
+    l_print("Audio MIC ring: queued=%d (%.2f ms) min=%d (%.2f ms) max=%d (%.2f ms) underruns=%u overruns=%u corr-low=%u corr-high=%u\n",
+            queued, (double) queued * 1000.0 / 48000.0,
+            min_queued, (double) min_queued * 1000.0 / 48000.0,
+            max_queued, (double) max_queued * 1000.0 / 48000.0,
+            underruns, overruns, low_corr, high_corr);
+    min_queued = MY_RING_BUFFER_SIZE;
+    max_queued = 0;
+    next_log_us = now_us + G_USEC_PER_SEC;
+  }
+  return sample;
+}
+
+//
+// AUDIO_OPEN_OUTPUT
+//
+// Open audio backend output for data from one of the RX.
+//
+int audio_open_output(RECEIVER *rx) {
+  if (rx == NULL) {
+    return -1;
+  }
+  /*
+   * Allocate and initialize rings before the audio backend is started.
+   * Publish the backend handle only after AudioOutputUnitStart() succeeds.
+   */
+  g_mutex_lock(&rx->local_audio_mutex);
+  rx->audio_backend_output_handle = NULL;
+  rx->local_audio_buffer = g_new(float, 2 * MY_RING_BUFFER_SIZE);
+  rx->sidetone_buffer = g_new0(float, MY_RING_BUFFER_SIZE);
+  atomic_store_explicit(&rx->local_audio_buffer_inpt, 0, memory_order_relaxed);
+  atomic_store_explicit(&rx->local_audio_buffer_outpt, 0, memory_order_relaxed);
+  atomic_store_explicit(&rx->sidetone_buffer_inpt, 0, memory_order_relaxed);
+  atomic_store_explicit(&rx->sidetone_buffer_outpt, 0, memory_order_relaxed);
+  rx->local_audio_cw_active = 0;
+  if (rx->id >= 0 && rx->id < (int)(sizeof(output_ring_primed) / sizeof(output_ring_primed[0]))) {
+    g_atomic_int_set(&output_ring_primed[rx->id], 0);
+    g_atomic_int_set(&output_ring_starved[rx->id], 0);
+    atomic_store_explicit(&rx_ring_diag_underruns[rx->id], 0U, memory_order_relaxed);
+    atomic_store_explicit(&rx_ring_diag_low_corrections[rx->id], 0U, memory_order_relaxed);
+    atomic_store_explicit(&rx_ring_diag_high_corrections[rx->id], 0U, memory_order_relaxed);
+    rx_ring_consumer_phase[rx->id] = 0.0;
+    rx_ring_consumer_catchup[rx->id] = FALSE;
+  }
+  if (rx->local_audio_buffer == NULL || rx->sidetone_buffer == NULL) {
+    g_free(rx->local_audio_buffer);
+    g_free(rx->sidetone_buffer);
+    rx->local_audio_buffer = NULL;
+    rx->sidetone_buffer = NULL;
+    g_mutex_unlock(&rx->local_audio_mutex);
+    t_print("%s: allocate buffer failed\n", __func__);
+    return -1;
+  }
+  g_mutex_unlock(&rx->local_audio_mutex);
+  int channels = 0;
+  void *handle = audio_backend_output_open(rx, rx->audio_name, &channels);
+  if (handle == NULL) {
+    g_mutex_lock(&rx->local_audio_mutex);
+    g_free(rx->local_audio_buffer);
+    g_free(rx->sidetone_buffer);
+    rx->local_audio_buffer = NULL;
+    rx->sidetone_buffer = NULL;
+    g_mutex_unlock(&rx->local_audio_mutex);
+    return -1;
+  }
+  g_mutex_lock(&rx->local_audio_mutex);
+  rx->local_audio_channels = channels;
+  rx->audio_backend_output_handle = handle;
+  g_mutex_unlock(&rx->local_audio_mutex);
+  t_print("%s: audio backend output name=%s channels=%d\n",
+          __func__, rx->audio_name, rx->local_audio_channels);
+  return 0;
+}
+
+
+//
+// AUDIO_CLOSE_INPUT
+//
+// close a TX microphone stream
+//
+void audio_close_input(void) {
+  t_print("%s: audio backend call audio_close_input\n", __func__);
+  if (transmitter != NULL) {
+    t_print("%s: micname=%s\n", __func__, transmitter->microphone_name);
+  }
+  void *handle = NULL;
+  g_mutex_lock(&audio_mutex);
+  handle = audio_backend_input_handle;
+  audio_backend_input_handle = NULL;
+  g_mutex_unlock(&audio_mutex);
+  //
+  // Stop and dispose AUHAL before freeing the lock-free mic ring.
+  //
+  audio_backend_input_close(handle);
+  g_mutex_lock(&audio_mutex);
+  if (mic_ring_buffer != NULL) {
+    g_free(mic_ring_buffer);
+    mic_ring_buffer = NULL;
+  }
+  atomic_store_explicit(&mic_ring_outpt, 0, memory_order_relaxed);
+  atomic_store_explicit(&mic_ring_inpt, 0, memory_order_relaxed);
+  atomic_store_explicit(&mic_ring_reset_pending, 0, memory_order_relaxed);
+  atomic_store_explicit(&mic_ring_reset_frames, 0, memory_order_relaxed);
+  atomic_store_explicit(&mic_ring_silence_frames, 0, memory_order_relaxed);
+  atomic_store_explicit(&mic_ring_underruns, 0U, memory_order_relaxed);
+  atomic_store_explicit(&mic_ring_overruns, 0U, memory_order_relaxed);
+  atomic_store_explicit(&mic_ring_diag_low_corrections, 0U, memory_order_relaxed);
+  atomic_store_explicit(&mic_ring_diag_high_corrections, 0U, memory_order_relaxed);
+  mic_ring_consumer_phase = 0.0;
+  mic_ring_consumer_correction = 0;
+  g_mutex_unlock(&audio_mutex);
+}
+
+
+//
+// AUDIO_CLOSE_OUTPUT
+//
+// shut down the stream connected with audio from one of the RX
+//
+void audio_close_output(RECEIVER *rx) {
+  audio_test_stop(rx);
+  t_print("%s: device=%s\n", __func__, rx->audio_name);
+  /*
+   * First prevent producers from entering audio_write()/cw_audio_write().
+   * Then stop the audio backend and wait for its callback to leave. Only after that
+   * may the lock-free callback-visible rings be released.
+   */
+  void *handle;
+  g_mutex_lock(&rx->local_audio_mutex);
+  handle = rx->audio_backend_output_handle;
+  rx->audio_backend_output_handle = NULL;
+  g_mutex_unlock(&rx->local_audio_mutex);
+  audio_backend_output_close(handle);
+  g_mutex_lock(&rx->local_audio_mutex);
+  if (rx->id >= 0 && rx->id < (int)(sizeof(output_ring_primed) / sizeof(output_ring_primed[0]))) {
+    g_atomic_int_set(&output_ring_primed[rx->id], 0);
+    g_atomic_int_set(&output_ring_starved[rx->id], 0);
+  }
+  g_free(rx->local_audio_buffer);
+  g_free(rx->sidetone_buffer);
+  rx->local_audio_buffer = NULL;
+  rx->sidetone_buffer = NULL;
+  atomic_store_explicit(&rx->local_audio_buffer_inpt, 0, memory_order_relaxed);
+  atomic_store_explicit(&rx->local_audio_buffer_outpt, 0, memory_order_relaxed);
+  atomic_store_explicit(&rx->sidetone_buffer_inpt, 0, memory_order_relaxed);
+  atomic_store_explicit(&rx->sidetone_buffer_outpt, 0, memory_order_relaxed);
+  rx->local_audio_cw_active = 0;
+  g_mutex_unlock(&rx->local_audio_mutex);
+}
+
+
+//
+// AUDIO_REPRIME_OUTPUT
+//
+// Re-prime the normal RX ring before RX is restarted after a TX/TUNE phase.
+// rxtx() calls this while the receiver producer is still stopped, so this
+// remains a single-producer operation with respect to the audio backend consumer.
+// Existing queued audio is preserved; only missing samples up to RX_LAT_TARGET
+// are added as silence.
+//
+void audio_reprime_output(RECEIVER *rx) {
+  if (rx == NULL || rx->local_audio_buffer == NULL || rx->audio_backend_output_handle == NULL) {
+    return;
+  }
+  int inpt = atomic_load_explicit(&rx->local_audio_buffer_inpt, memory_order_relaxed);
+  int outpt = atomic_load_explicit(&rx->local_audio_buffer_outpt, memory_order_acquire);
+  int avail = inpt - outpt;
+  if (avail < 0) {
+    avail += MY_RING_BUFFER_SIZE;
+  }
+  int rx_lat_low;
+  int rx_lat_target;
+  rx_audio_latency_limits(&rx_lat_low, &rx_lat_target);
+  (void)rx_lat_low;
+  if (avail < rx_lat_target) {
+    int oldpt = inpt;
+    int missing = rx_lat_target - avail;
+    for (int i = 0; i < missing; i++) {
+      rx->local_audio_buffer[2 * oldpt] = 0.0f;
+      rx->local_audio_buffer[2 * oldpt + 1] = 0.0f;
+      oldpt++;
+      if (oldpt >= MY_RING_BUFFER_SIZE) {
+        oldpt = 0;
+      }
+    }
+    atomic_store_explicit(&rx->local_audio_buffer_inpt, oldpt, memory_order_release);
+    if (rx->id >= 0 && rx->id < 8) {
+      g_atomic_int_set(&output_ring_starved[rx->id], 0);
+      atomic_store_explicit(&rx_ring_diag_underruns[rx->id], 0U, memory_order_relaxed);
+    }
+    l_print("%s: RX%d reprime %d -> %d samples (added %d silence)\n",
+            __func__, rx->id, avail, rx_lat_target, missing);
+  }
+}
+
+//
+// AUDIO_WRITE
+//
+// Store RX audio in the ring consumed by the audio backend callback.
+//
+// Note that the check on radio_is_transmitting() takes care that "blocking"
+// by the mutex can only occur in the moment of a RX/TX transition if
+// both audio_write() and cw_audio_write() get a "go".
+//
+// So mutex locking/unlocking should only cost few CPU cycles in
+// normal operation.
+//
+static int audio_write_internal(RECEIVER *rx, float left, float right, int ignore_mute) {
+  if (atomic_load_explicit(&rx->audio_test_active, memory_order_acquire)) {
+    return 0;
+  }
+  static gint64 diag_next_log_us[8] = { 0 };
+  static int diag_min_queued[8] = { 0 };
+  static int diag_max_queued[8] = { 0 };
+  static unsigned int diag_low_corrections[8] = { 0 };
+  static unsigned int diag_high_corrections[8] = { 0 };
+  int txmode = vfo_get_tx_mode();
+  float *buffer = rx->local_audio_buffer;
+  if (rx == active_receiver && radio_is_transmitting() && (txmode == modeCWU || txmode == modeCWL)) {
+    // Stop producing new RX audio during CW TX. The existing RX tail drains naturally.
+    return 0;
+  }
+  g_mutex_lock(&rx->local_audio_mutex);
+  rx->local_audio_cw_active = 0;
+  if (rx->audio_backend_output_handle != NULL && buffer != NULL) {
+    int inpt = atomic_load_explicit(&rx->local_audio_buffer_inpt, memory_order_relaxed);
+    int outpt = atomic_load_explicit(&rx->local_audio_buffer_outpt, memory_order_acquire);
+    int avail = inpt - outpt;
+    if (avail < 0) { avail += MY_RING_BUFFER_SIZE; }
+    int rx_lat_low;
+    int rx_lat_target;
+    rx_audio_latency_limits(&rx_lat_low, &rx_lat_target);
+    if (g_atomic_int_get(&audio_rx_latency_correction_enabled) &&
+        avail < rx_lat_low) {
+      if (rx->id >= 0 && rx->id < 8) {
+        diag_low_corrections[rx->id]++;
+        atomic_fetch_add_explicit(&rx_ring_diag_low_corrections[rx->id],
+                                  1U, memory_order_relaxed);
+      }
+      int oldpt = inpt;
+      for (int i = 0; i < rx_lat_target - avail; i++) {
+        buffer[2 * oldpt] = 0.0f;
+        buffer[2 * oldpt + 1] = 0.0f;
+        oldpt++;
+        if (oldpt >= MY_RING_BUFFER_SIZE) { oldpt = 0; }
+      }
+      atomic_store_explicit(&rx->local_audio_buffer_inpt, oldpt, memory_order_release);
+      inpt = oldpt;
+      avail = rx_lat_target;
+    }
+    /*
+     * High-latency recovery is performed by the audio backend consumer using a
+     * small fractional read-rate increase.  The producer therefore never
+     * drops samples merely because a latency watermark is exceeded.  A sample
+     * is lost here only in the unavoidable emergency case that the ring is
+     * actually full.
+     */
+    if (rx->local_audio_mute && !ignore_mute) {
+      left = 0.0f;
+      right = 0.0f;
+    }
+    int oldpt = inpt;
+    int newpt = oldpt + 1;
+    if (newpt == MY_RING_BUFFER_SIZE) { newpt = 0; }
+    outpt = atomic_load_explicit(&rx->local_audio_buffer_outpt, memory_order_acquire);
+    if (newpt != outpt) {
+      buffer[2 * oldpt] = left;
+      buffer[2 * oldpt + 1] = right;
+      atomic_store_explicit(&rx->local_audio_buffer_inpt, newpt, memory_order_release);
+      inpt = newpt;
+    } else if (rx->id >= 0 && rx->id < 8) {
+      diag_high_corrections[rx->id]++;
+      atomic_fetch_add_explicit(&rx_ring_diag_high_corrections[rx->id],
+                                1U, memory_order_relaxed);
+    }
+    if (rx->id >= 0 && rx->id < 8) {
+      int queued = inpt - outpt;
+      if (queued < 0) {
+        queued += MY_RING_BUFFER_SIZE;
+      }
+      if (diag_next_log_us[rx->id] == 0) {
+        diag_min_queued[rx->id] = queued;
+        diag_max_queued[rx->id] = queued;
+        diag_next_log_us[rx->id] = g_get_monotonic_time() + G_USEC_PER_SEC;
+      } else {
+        if (queued < diag_min_queued[rx->id]) {
+          diag_min_queued[rx->id] = queued;
+        }
+        if (queued > diag_max_queued[rx->id]) {
+          diag_max_queued[rx->id] = queued;
+        }
+        gint64 now_us = g_get_monotonic_time();
+        if (now_us >= diag_next_log_us[rx->id]) {
+          unsigned int underruns =
+                  atomic_exchange_explicit(&rx_ring_diag_underruns[rx->id],
+                                           0U, memory_order_relaxed);
+          l_print("Audio RX ring: rx=%d queued=%d (%.2f ms) "
+                  "min=%d (%.2f ms) max=%d (%.2f ms) "
+                  "underruns=%u low_corr=%u high_corr=%u\n",
+                  rx->id,
+                  queued, (double) queued * 1000.0 / 48000.0,
+                  diag_min_queued[rx->id],
+                  (double) diag_min_queued[rx->id] * 1000.0 / 48000.0,
+                  diag_max_queued[rx->id],
+                  (double) diag_max_queued[rx->id] * 1000.0 / 48000.0,
+                  underruns,
+                  diag_low_corrections[rx->id],
+                  diag_high_corrections[rx->id]);
+          diag_min_queued[rx->id] = queued;
+          diag_max_queued[rx->id] = queued;
+          diag_low_corrections[rx->id] = 0;
+          diag_high_corrections[rx->id] = 0;
+          diag_next_log_us[rx->id] = now_us + G_USEC_PER_SEC;
+        }
+      }
+    }
+  }
+  g_mutex_unlock(&rx->local_audio_mutex);
+  return 0;
+}
+
+//
+// During CW, between the elements the side tone contains "true" silence.
+// We detect a sequence of 16 subsequent zero samples, and insert or delete
+// a zero sample depending on the buffer water mark:
+// If there are more than two audio backend buffers available, delete one sample,
+// if it drops down to less than one audio backend buffer, insert one sample
+//
+// Thus we have an active latency management.
+//
+int audio_write(RECEIVER *rx, float left, float right) {
+  return audio_write_internal(rx, left, right, 0);
+}
+
+int audio_write_monitor(RECEIVER *rx, float left, float right) {
+  return audio_write_internal(rx, left, right, 1);
+}
+
+int cw_audio_write(RECEIVER *rx, float sample) {
+  if (atomic_load_explicit(&rx->audio_test_active, memory_order_acquire)) {
+    return 0;
+  }
+  static gint64 diag_next_log_us = 0;
+  static int diag_min_avail = MY_RING_BUFFER_SIZE;
+  static int diag_max_avail = 0;
+  static unsigned int diag_low_corrections = 0;
+  static unsigned int diag_high_corrections = 0;
+  g_mutex_lock(&rx->local_audio_mutex);
+  if (rx->audio_backend_output_handle != NULL && rx->sidetone_buffer != NULL) {
+    static int count = 0;
+    int inpt = atomic_load_explicit(&rx->sidetone_buffer_inpt, memory_order_relaxed);
+    int outpt = atomic_load_explicit(&rx->sidetone_buffer_outpt, memory_order_acquire);
+    int avail = inpt - outpt;
+    int adjust = 0;
+    if (avail < 0) { avail += MY_RING_BUFFER_SIZE; }
+    if (!rx->local_audio_cw_active) {
+      // Prime only the sidetone ring; keep the RX fade-out tail intact.
+      for (int i = 0; i < CW_LAT_TARGET; i++) {
+        rx->sidetone_buffer[i] = 0.0f;
+      }
+      atomic_store_explicit(&rx->sidetone_buffer_outpt, 0, memory_order_relaxed);
+      atomic_store_explicit(&rx->sidetone_buffer_inpt, CW_LAT_TARGET, memory_order_release);
+      inpt = CW_LAT_TARGET;
+      outpt = 0;
+      avail = CW_LAT_TARGET;
+      count = 0;
+      diag_next_log_us = 0;
+      diag_min_avail = MY_RING_BUFFER_SIZE;
+      diag_max_avail = 0;
+      diag_low_corrections = 0;
+      diag_high_corrections = 0;
+      atomic_store_explicit(&cw_ring_diag_underruns, 0U, memory_order_relaxed);
+      rx->local_audio_cw_active = 1;
+    }
+    if (sample != 0.0f) { count = 0; }
+    if (++count >= 16) {
+      count = 0;
+      if (avail > CW_LAT_HIGH) {
+        adjust = 2;
+        diag_high_corrections++;
+      }
+      if (avail < CW_LAT_LOW) {
+        adjust = 1;
+        diag_low_corrections++;
+      }
+    }
+    if (adjust != 2) {
+      int oldpt = inpt;
+      int newpt = oldpt + 1;
+      if (newpt == MY_RING_BUFFER_SIZE) { newpt = 0; }
+      outpt = atomic_load_explicit(&rx->sidetone_buffer_outpt, memory_order_acquire);
+      if (newpt != outpt) {
+        rx->sidetone_buffer[oldpt] = (adjust == 1) ? 0.0f : sample;
+        atomic_store_explicit(&rx->sidetone_buffer_inpt, newpt, memory_order_release);
+        if (adjust == 1) {
+          oldpt = newpt;
+          newpt = oldpt + 1;
+          if (newpt == MY_RING_BUFFER_SIZE) { newpt = 0; }
+          outpt = atomic_load_explicit(&rx->sidetone_buffer_outpt, memory_order_acquire);
+          if (newpt != outpt) {
+            rx->sidetone_buffer[oldpt] = 0.0f;
+            atomic_store_explicit(&rx->sidetone_buffer_inpt, newpt, memory_order_release);
+          }
+        }
+      }
+    }
+    inpt = atomic_load_explicit(&rx->sidetone_buffer_inpt, memory_order_relaxed);
+    outpt = atomic_load_explicit(&rx->sidetone_buffer_outpt, memory_order_acquire);
+    avail = inpt - outpt;
+    if (avail < 0) { avail += MY_RING_BUFFER_SIZE; }
+    if (avail < diag_min_avail) { diag_min_avail = avail; }
+    if (avail > diag_max_avail) { diag_max_avail = avail; }
+    gint64 diag_now_us = g_get_monotonic_time();
+    if (diag_next_log_us == 0) {
+      diag_next_log_us = diag_now_us + G_USEC_PER_SEC;
+    } else if (diag_now_us >= diag_next_log_us) {
+      unsigned int diag_underruns =
+              atomic_exchange_explicit(&cw_ring_diag_underruns, 0U, memory_order_relaxed);
+      l_print("Audio CW ring: queued=%d (%.2f ms) min=%d (%.2f ms) max=%d (%.2f ms) underruns=%u low_corr=%u high_corr=%u\n",
+              avail, (double) avail * 1000.0 / 48000.0,
+              diag_min_avail, (double) diag_min_avail * 1000.0 / 48000.0,
+              diag_max_avail, (double) diag_max_avail * 1000.0 / 48000.0,
+              diag_underruns, diag_low_corrections, diag_high_corrections);
+      diag_min_avail = MY_RING_BUFFER_SIZE;
+      diag_max_avail = 0;
+      diag_low_corrections = 0;
+      diag_high_corrections = 0;
+      diag_next_log_us = diag_now_us + G_USEC_PER_SEC;
+    }
+  }
+  g_mutex_unlock(&rx->local_audio_mutex);
+  return 0;
+}

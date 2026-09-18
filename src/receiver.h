@@ -24,13 +24,6 @@
 #include <gtk/gtk.h>
 #include <time.h>
 #include <stdatomic.h>
-#ifdef ALSA
-  #include <alsa/asoundlib.h>
-#endif
-#ifdef PULSEAUDIO
-  #include <pulse/pulseaudio.h>
-  #include <pulse/simple.h>
-#endif
 
 enum _audio_channel_enum {
   STEREO = 0,
@@ -43,11 +36,7 @@ enum _audio_channel_enum {
 #define RX_CW_ZERO_BEAT_STEP_HZ 5
 #define RX_CW_ZERO_BEAT_BINS (((RX_CW_ZERO_BEAT_MAX_HZ - RX_CW_ZERO_BEAT_MIN_HZ) / RX_CW_ZERO_BEAT_STEP_HZ) + 1)
 
-#ifdef WDSP1
-  #define NR_MAX 4
-#else
-  #define NR_MAX 5
-#endif
+#define NR_MAX 5
 
 typedef struct _receiver {
   int id;
@@ -258,25 +247,8 @@ typedef struct _receiver {
   int audio_device;
   int local_audio_mute;
   gchar audio_name[512];
-#ifdef PULSEAUDIO
-  int pulseaudio_buffer_size;  /* 0 = AUTO, otherwise requested quantum in frames */
-#endif
-
-#if defined(COREAUDIO) && defined(PULSEAUDIO) && defined(ALSA)
-  // this is only possible for "cppcheck" runs
-  // declare all data without conflicts
-  void *playstream;
-  int local_audio_buffer_inpt;
-  int local_audio_buffer_outpt;
-  int local_audio_buffer_offset;
-  int local_audio_cw_active;
-  int local_audio_channels;
-  void *local_audio_buffer;
-  snd_pcm_t *playback_handle;
-  snd_pcm_format_t local_audio_format;
-#endif
-#if defined(COREAUDIO) && !defined(PULSEAUDIO) && !defined(ALSA)
-  void *coreaudio_output_handle;
+#ifdef AUDIO_RINGBUFFER
+  void *audio_backend_output_handle;
   atomic_int local_audio_buffer_inpt;      // producer pointer in RX audio ring-buffer
   atomic_int local_audio_buffer_outpt;     // consumer pointer in RX audio ring-buffer
   atomic_int sidetone_buffer_inpt;         // producer pointer in sidetone ring-buffer
@@ -285,21 +257,6 @@ typedef struct _receiver {
   int local_audio_cw_active;
   float *local_audio_buffer;
   float *sidetone_buffer;
-#endif
-#if !defined(COREAUDIO) && !defined(PULSEAUDIO) && defined(ALSA)
-  snd_pcm_t *playback_handle;
-  snd_pcm_format_t local_audio_format;
-  void *local_audio_buffer;        // different formats possible, so void*
-  int local_audio_buffer_offset;
-  int local_audio_cw_active;
-  int local_audio_channels;
-#endif
-#if !defined(COREAUDIO) && defined(PULSEAUDIO) && !defined(ALSA)
-  pa_simple *playstream;
-  float *local_audio_buffer;
-  int local_audio_buffer_offset;
-  int local_audio_cw_active;
-  int local_audio_channels;
 #endif
 
   GMutex local_audio_mutex;

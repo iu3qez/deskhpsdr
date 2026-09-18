@@ -9,9 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#ifndef WDSP1
-  #include <wdsp.h>
-#endif
+#include <wdsp.h>
 
 #include "rx_eq_graph.h"
 #include "radio.h"
@@ -101,10 +99,8 @@ static void save_curve_to_mode(RX_EQ_GRAPH *g) {
 }
 
 static void apply_curve(RX_EQ_GRAPH *g) {
-#ifndef WDSP1
   SetRXAEQCurve(g->rx->id, g->rx->eq_curve_degree, g->rx->eq_curve_r, g->rx->eq_curve_umethod);
   SetRXAEQWeights(g->rx->id, RX_EQ_POINTS, g->rx->eq_weight);
-#endif
   gtk_widget_queue_draw(g->area);
 }
 
@@ -171,7 +167,6 @@ static gboolean draw_cb(GtkWidget *widget, cairo_t *cr, gpointer data) {
   }
   cairo_set_source_rgba(cr, fg.red, fg.green, fg.blue, 0.9);
   cairo_set_line_width(cr, 2.0);
-#ifndef WDSP1
   if (g->rx->eq_curve_degree >= 1) {
     double X[RX_EQ_DRAW_POINTS];
     double Y[RX_EQ_DRAW_POINTS];
@@ -191,9 +186,7 @@ static gboolean draw_cb(GtkWidget *widget, cairo_t *cr, gpointer data) {
       }
     }
     if (started) { cairo_stroke(cr); }
-  } else
-#endif
-  {
+  } else {
     for (int i = 1; i <= RX_EQ_POINTS; i++) {
       double f = (g->dragging && g->selected == i) ? g->drag_freq : g->rx->eq_freq[i];
       double gain = (g->dragging && g->selected == i) ? g->drag_gain : g->rx->eq_gain[i];
@@ -344,7 +337,7 @@ GtkWidget *rx_eq_graph_create(RECEIVER *rx) {
   gtk_container_set_border_width(GTK_CONTAINER(box), 5);
   gtk_container_add(GTK_CONTAINER(frame), box);
   g->area = gtk_drawing_area_new();
-  gtk_widget_set_size_request(g->area, 560, 230);
+  gtk_widget_set_size_request(g->area, 560, 180);
   gtk_widget_set_hexpand(g->area, TRUE);
   gtk_widget_add_events(g->area, GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK |
                         GDK_POINTER_MOTION_MASK | GDK_SCROLL_MASK | GDK_SMOOTH_SCROLL_MASK);
@@ -355,6 +348,7 @@ GtkWidget *rx_eq_graph_create(RECEIVER *rx) {
   GtkWidget *label = gtk_label_new("Curve:");
   gtk_box_pack_start(GTK_BOX(controls), label, FALSE, FALSE, 0);
   GtkWidget *combo = gtk_combo_box_text_new();
+  gtk_style_context_add_class(gtk_widget_get_style_context(combo), "eq-combo");
   gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(combo), "Legacy linear");
   gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(combo), "Linear (1)");
   gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(combo), "Cubic (3)");
