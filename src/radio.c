@@ -1949,6 +1949,7 @@ void radio_change_receivers(int r) {
   if (protocol == ORIGINAL_PROTOCOL) {
     old_protocol_run();
   }
+  tci_receivers_changed();
 }
 
 void radio_change_sample_rate(int rate) {

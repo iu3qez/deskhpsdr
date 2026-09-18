@@ -293,6 +293,7 @@ typedef enum {
   TCI_SET_LOCK_IQ_RATE,
   TCI_SET_LOCK_RX_ATT,
   TCI_SET_LOCK_BAND,
+  TCI_SET_LOCK_RX_ENABLE,
   TCI_SET_LOCK_COUNT
 } TCI_SET_LOCK_ID;
 
@@ -2116,12 +2117,17 @@ static void tci_send_tx_enable(CLIENT *client) {
   tci_send_text(client, msg);
 }
 
+//
+// receiver[1] always exists (RECEIVERS is 2), so RX2 is answered also while
+// it is off: a client has to learn "false", not get silence.
+//
 static void tci_send_rx_enable(CLIENT *client, int receiver_id) {
   char msg[MAXMSGSIZE];
-  if (client == NULL || receiver_id < 0 || receiver_id >= receivers) {
+  if (client == NULL || receiver_id < 0 || receiver_id >= RECEIVERS) {
     return;
   }
-  snprintf(msg, MAXMSGSIZE, "rx_enable:%d,true;", receiver_id);
+  snprintf(msg, MAXMSGSIZE, "rx_enable:%d,%s;", receiver_id,
+           receiver_id < receivers ? "true" : "false");
   tci_send_text(client, msg);
 }
 
@@ -5232,14 +5238,56 @@ static void tci_cmd_tx_enable(CLIENT *client, const TCI_CMD *cmd) {
   tci_send_tx_enable(client);
 }
 
+//
+// rx_enable:1,<bool> switches RX2 with the call the Receivers combo of the
+// radio menu makes, and like the combo it is refused while transmitting:
+// radio_change_receivers() rebuilds the RX panels, which are not active in
+// TX, and under P1 it also stops and restarts the protocol. RX1 cannot be
+// switched off. A change reaches every client through tci_receivers_changed();
+// when nothing changes the requester gets the state in force.
+//
+typedef struct {
+  int client_seq;
+  int enable;
+} TCI_RX_ENABLE_UPDATE;
+
+static int tci_apply_rx_enable(void *data) {
+  TCI_RX_ENABLE_UPDATE *ru = (TCI_RX_ENABLE_UPDATE *) data;
+  char msg[MAXMSGSIZE];
+  int want = ru->enable ? 2 : 1;
+  int before = receivers;
+  if (want != receivers) {
+    if (radio_is_transmitting()) {
+      t_print("TCI%d rx_enable ignored while transmitting\n", ru->client_seq);
+    } else {
+      radio_change_receivers(want);
+    }
+  }
+  if (receivers == before) {
+    snprintf(msg, MAXMSGSIZE, "rx_enable:1,%s;", receivers > 1 ? "true" : "false");
+    tci_send_text_by_seq(ru->client_seq, msg);
+  }
+  g_free(ru);
+  return G_SOURCE_REMOVE;
+}
+
 static void tci_cmd_rx_enable(CLIENT *client, const TCI_CMD *cmd) {
-  int receiver_id = 0;
+  int receiver_id = tci_int(cmd->argv[0], 0);
   if (client == NULL) {
     return;
   }
-  if (cmd->argc >= 1 && cmd->argv[0] != NULL) {
-    receiver_id = tci_int(cmd->argv[0], 0);
+  if (cmd->argc >= 2 && receiver_id == 1 && radio != NULL && radio->supported_receivers > 1) {
+    if (!tci_set_lock_allowed(client, TCI_SET_LOCK_RX_ENABLE)) {
+      tci_send_rx_enable(client, receiver_id);
+      return;
+    }
+    TCI_RX_ENABLE_UPDATE *ru = g_new(TCI_RX_ENABLE_UPDATE, 1);
+    ru->client_seq = client->seq;
+    ru->enable = tci_bool(cmd->argv[1]);
+    g_idle_add(tci_apply_rx_enable, ru);
+    return;
   }
+  // a query, RX1, or a radio with one receiver: the state in force
   tci_send_rx_enable(client, receiver_id);
 }
 
@@ -7024,6 +7072,60 @@ static void tci_process_ws_payload(CLIENT *client, int type, char *msg) {
   }
 }
 
+//
+// The state of the second receiver, in the two groups the initial state sends
+// it in: the tuning next to RX1's, the controls after RX1's.
+//
+static void tci_send_rx2_tuning(CLIENT *client) {
+  tci_send_dds(client, VFO_B);
+  tci_send_text(client, "if:1,0,0;");
+  tci_send_text(client, "if:1,1,0;");
+  tci_send_vfo(client, VFO_B, 0);
+  tci_send_vfo(client, VFO_B, 1);
+  tci_send_mode(client, VFO_B);
+  tci_send_rx_filter_band(client, VFO_B);
+}
+
+static void tci_send_rx2_controls(CLIENT *client) {
+  tci_send_sql_enable(client, VFO_B);
+  tci_send_sql_level(client, VFO_B);
+  tci_send_rx_anf_enable(client, VFO_B);
+  tci_send_rx_apf_enable(client, VFO_B);
+  tci_send_rx_nb_enable(client, VFO_B);
+  tci_send_rx_nf_enable(client, VFO_B);
+  tci_send_rx_bin_enable(client, VFO_B);
+  tci_send_rx_nr_enable(client, VFO_B);
+  tci_send_rit_enable(client, VFO_B);
+  tci_send_rit_offset(client, VFO_B);
+  tci_send_rx_mute(client, VFO_B);
+  tci_send_rx_volume(client, VFO_B, 0);
+  tci_send_rx_volume(client, VFO_B, 1);
+  tci_send_agc_gain(client, VFO_B);
+  tci_send_agc_mode(client, VFO_B);
+}
+
+//
+// RX2 was switched on or off, from the radio menu, CAT or rx_enable. A client
+// connected while RX2 was off has never seen its state, which the initial
+// state only carries while RX2 runs, so it gets the whole of it here.
+//
+void tci_receivers_changed(void) {
+  GList *clients;
+  if (!tci_running) { return; }
+  clients = tci_clients_snapshot();
+  for (GList *l = clients; l != NULL; l = l->next) {
+    CLIENT *client = (CLIENT *) l->data;
+    if (client != NULL && client->running) {
+      tci_send_rx_enable(client, 1);
+      if (receivers > 1) {
+        tci_send_rx2_tuning(client);
+        tci_send_rx2_controls(client);
+      }
+    }
+  }
+  tci_clients_snapshot_free(clients);
+}
+
 static void tci_send_initial_state(CLIENT *client) {
   //
   // Send initial state info to client
@@ -7059,18 +7161,10 @@ static void tci_send_initial_state(CLIENT *client) {
   tci_send_mode(client, VFO_A);
   tci_send_rx_filter_band(client, VFO_A);
   if (receivers > 1) {
-    tci_send_dds(client, VFO_B);
-    tci_send_text(client, "if:1,0,0;");
-    tci_send_text(client, "if:1,1,0;");
-    tci_send_vfo(client, VFO_B, 0);
-    tci_send_vfo(client, VFO_B, 1);
-    tci_send_mode(client, VFO_B);
-    tci_send_rx_filter_band(client, VFO_B);
+    tci_send_rx2_tuning(client);
   }
   tci_send_rx_enable(client, 0);
-  if (receivers > 1) {
-    tci_send_rx_enable(client, 1);
-  }
+  tci_send_rx_enable(client, 1);
   tci_send_tx_enable(client);
   tci_send_split(client);
   tci_send_lock(client, VFO_A);
@@ -7103,21 +7197,7 @@ static void tci_send_initial_state(CLIENT *client) {
   tci_send_agc_gain(client, VFO_A);
   tci_send_agc_mode(client, VFO_A);
   if (receivers > 1) {
-    tci_send_sql_enable(client, VFO_B);
-    tci_send_sql_level(client, VFO_B);
-    tci_send_rx_anf_enable(client, VFO_B);
-    tci_send_rx_apf_enable(client, VFO_B);
-    tci_send_rx_nb_enable(client, VFO_B);
-    tci_send_rx_nf_enable(client, VFO_B);
-    tci_send_rx_bin_enable(client, VFO_B);
-    tci_send_rx_nr_enable(client, VFO_B);
-    tci_send_rit_enable(client, VFO_B);
-    tci_send_rit_offset(client, VFO_B);
-    tci_send_rx_mute(client, VFO_B);
-    tci_send_rx_volume(client, VFO_B, 0);
-    tci_send_rx_volume(client, VFO_B, 1);
-    tci_send_agc_gain(client, VFO_B);
-    tci_send_agc_mode(client, VFO_B);
+    tci_send_rx2_controls(client);
   }
   tci_send_macros_cwspeed(client);
   tci_send_cw_macros_delay(client);
