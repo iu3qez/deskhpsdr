@@ -5475,6 +5475,59 @@ static void tci_cmd_vfo(CLIENT *client, const TCI_CMD *cmd) {
   }
 }
 
+//
+// vfo_swap_ex, vfo_a_to_b_ex and vfo_b_to_a_ex: A<>B, A>B and B>A with the
+// calls the GUI buttons and CAT ZZVS make, which move the whole struct _vfo:
+// band, band stack, frequency, CTUN, RIT/XIT, mode, filter and step.
+// vfo_swap_ex is the name and the form Thetis uses (handleVfoSwapEx() in
+// TCIServer.cs). There is no reply: the call is not wrapped in
+// tci_begin_apply(), so vfo_vfos_changed() sends the result to every client
+// through tci_vfos_changed(), as it does for the GUI and CAT. Like the GUI,
+// the commands are also accepted while transmitting. They move both VFOs, so
+// they take the set-lock of vfo.
+//
+typedef enum {
+  TCI_VFO_A_SWAP_B,
+  TCI_VFO_A_TO_B,
+  TCI_VFO_B_TO_A
+} TCI_VFO_COPY;
+
+static int tci_apply_vfo_copy(void *data) {
+  switch ((TCI_VFO_COPY) GPOINTER_TO_INT(data)) {
+  case TCI_VFO_A_SWAP_B:
+    vfo_a_swap_b();
+    break;
+  case TCI_VFO_A_TO_B:
+    vfo_a_to_b();
+    break;
+  case TCI_VFO_B_TO_A:
+    vfo_b_to_a();
+    break;
+  }
+  return G_SOURCE_REMOVE;
+}
+
+static void tci_queue_vfo_copy(CLIENT *client, TCI_VFO_COPY op) {
+  if (client == NULL) { return; }
+  if (!tci_set_lock_allowed(client, TCI_SET_LOCK_VFO)) { return; }
+  g_idle_add(tci_apply_vfo_copy, GINT_TO_POINTER(op));
+}
+
+static void tci_cmd_vfo_swap_ex(CLIENT *client, const TCI_CMD *cmd) {
+  (void) cmd;
+  tci_queue_vfo_copy(client, TCI_VFO_A_SWAP_B);
+}
+
+static void tci_cmd_vfo_a_to_b_ex(CLIENT *client, const TCI_CMD *cmd) {
+  (void) cmd;
+  tci_queue_vfo_copy(client, TCI_VFO_A_TO_B);
+}
+
+static void tci_cmd_vfo_b_to_a_ex(CLIENT *client, const TCI_CMD *cmd) {
+  (void) cmd;
+  tci_queue_vfo_copy(client, TCI_VFO_B_TO_A);
+}
+
 static void tci_cmd_rx_smeter(CLIENT *client, const TCI_CMD *cmd) {
   tci_send_smeter(client, tci_int(cmd->argv[0], 0));
 }
@@ -6811,6 +6864,9 @@ static const TCI_DISPATCH tci_dispatch[] = {
   { "modulation",        1,  2, tci_cmd_modulation },
   { "modulation_ex",     1,  1, tci_cmd_modulation_ex },
   { "vfo",               2,  3, tci_cmd_vfo },
+  { "vfo_swap_ex",       0,  0, tci_cmd_vfo_swap_ex },
+  { "vfo_a_to_b_ex",     0,  0, tci_cmd_vfo_a_to_b_ex },
+  { "vfo_b_to_a_ex",     0,  0, tci_cmd_vfo_b_to_a_ex },
   { "rx_smeter",         1,  3, tci_cmd_rx_smeter },
   { "drive",             0,  2, tci_cmd_drive },
   { "tune_drive",        1,  2, tci_cmd_tune_drive },
