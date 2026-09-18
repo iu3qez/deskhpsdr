@@ -369,3 +369,7 @@ needing a radio. Run `uv run --script stuff/tci_spectrum_probe.py --help`
   about.
 - Nothing described here changes the on-the-wire format of the existing
   audio or I/Q streams, or of any other TCI text command.
+- Independently of these extensions, narrow FM is reported by
+  `modulation` and advertised in `modulations_list` as `NFM`, the name
+  the TCI specification gives it. Earlier builds answered `FM` and
+  advertised `FMN`; `nfm`, `fm` and `fmn` are all accepted on input.

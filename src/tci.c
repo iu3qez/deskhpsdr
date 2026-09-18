@@ -3518,7 +3518,7 @@ static const char *tci_mode_name(int m) {
   case modeCWU:
     return "CW";
   case modeFMN:
-    return "FM";
+    return "NFM";
   case modeAM:
     return "AM";
   case modeDIGU:
@@ -3637,6 +3637,7 @@ static int tci_parse_mode(const char *mode_str) {
   if (!g_ascii_strcasecmp(mode_str, "cw"))   { return modeCWU; }
   if (!g_ascii_strcasecmp(mode_str, "cwl"))  { return modeCWL; }
   if (!g_ascii_strcasecmp(mode_str, "cwu"))  { return modeCWU; }
+  if (!g_ascii_strcasecmp(mode_str, "nfm"))  { return modeFMN; }
   if (!g_ascii_strcasecmp(mode_str, "fmn"))  { return modeFMN; }
   if (!g_ascii_strcasecmp(mode_str, "fm"))   { return modeFMN; }
   if (!g_ascii_strcasecmp(mode_str, "am"))   { return modeAM; }
@@ -6979,7 +6980,7 @@ static void tci_send_initial_state(CLIENT *client) {
   tci_send_audio_samplerate(client);
   tci_send_text(client, "audio_stream_sample_type:float32;");
   tci_send_text(client, "audio_stream_channels:1;");
-  tci_send_text(client, "modulations_list:LSB,USB,DSB,CW,FMN,AM,DIGU,SPEC,DIGL,SAM,DRM;");
+  tci_send_text(client, "modulations_list:LSB,USB,DSB,CW,NFM,AM,DIGU,SPEC,DIGL,SAM,DRM;");
   tci_send_dds(client, VFO_A);
   tci_send_text(client, "if:0,0,0;");
   tci_send_text(client, "if:0,1,0;");
