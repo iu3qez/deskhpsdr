@@ -2063,19 +2063,6 @@ static void tci_send_rx_filter_band(CLIENT *client, int v) {
   tci_send_text(client, msg);
 }
 
-static void tci_broadcast_rx_filter_band_value(int receiver_id, int low, int high) {
-  char msg[MAXMSGSIZE];
-  GList *clients = tci_clients_snapshot();
-  snprintf(msg, MAXMSGSIZE, "rx_filter_band:%d,%d,%d;", receiver_id, low, high);
-  for (GList *l = clients; l != NULL; l = l->next) {
-    CLIENT *client = (CLIENT *) l->data;
-    if (client != NULL && client->running) {
-      tci_send_text(client, msg);
-    }
-  }
-  tci_clients_snapshot_free(clients);
-}
-
 void tci_rx_filter_band_changed(int receiver_id) {
   GList *clients;
   if (!tci_running) { return; }
@@ -5322,6 +5309,22 @@ static void tci_cmd_tune_drive(CLIENT *client, const TCI_CMD *cmd) {
 }
 
 
+//
+// The edges are normalized against the mode, and the mode may still be in
+// flight: a modulation received just before is queued on the main loop as
+// well. So the lws thread queues the edges as received, and normalization,
+// the change and the broadcast of what was applied all happen here, after
+// any mode change queued earlier (GLib dispatches idle sources of equal
+// priority in the order they were added).
+//
+static int tci_rx_filter_update_cb(void *data) {
+  int receiver_id = ((EXT_RX_FILTER_UPDATE *) data)->receiver_id;
+  ext_rx_filter_update(data);   // frees data
+  // edges rejected as empty still get an answer: the filter in force
+  tci_rx_filter_band_changed(receiver_id);
+  return G_SOURCE_REMOVE;
+}
+
 static void tci_cmd_rx_filter_band(CLIENT *client, const TCI_CMD *cmd) {
   int receiver_id = tci_int(cmd->argv[0], 0);
   if (receiver_id < 0 || receiver_id >= receivers || receiver[receiver_id] == NULL) {
@@ -5332,18 +5335,11 @@ static void tci_cmd_rx_filter_band(CLIENT *client, const TCI_CMD *cmd) {
       tci_send_rx_filter_band(client, receiver_id);
       return;
     }
-    EXT_RX_FILTER_UPDATE *fu;
-    int low = tci_int(cmd->argv[1], 0);
-    int high = tci_int(cmd->argv[2], 0);
-    if (!ext_normalize_rx_filter_band(vfo[receiver_id].mode, &low, &high)) {
-      return;
-    }
-    fu = g_new(EXT_RX_FILTER_UPDATE, 1);
+    EXT_RX_FILTER_UPDATE *fu = g_new(EXT_RX_FILTER_UPDATE, 1);
     fu->receiver_id = receiver_id;
-    fu->low = low;
-    fu->high = high;
-    g_idle_add(ext_rx_filter_update, fu);
-    tci_broadcast_rx_filter_band_value(receiver_id, low, high);
+    fu->low = tci_int(cmd->argv[1], 0);
+    fu->high = tci_int(cmd->argv[2], 0);
+    g_idle_add(tci_rx_filter_update_cb, fu);
   } else {
     tci_send_rx_filter_band(client, receiver_id);
   }
