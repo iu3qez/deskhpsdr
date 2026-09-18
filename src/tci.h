@@ -60,6 +60,7 @@ void tci_rx_nr_enable_changed(int receiver_id);
 int tci_is_applying(void);
 void tci_tune_changed(int state);
 void tci_split_changed(void);
+void tci_receivers_changed(void);
 void tci_lock_changed(void);
 void tci_rit_enable_changed(int receiver_id);
 void tci_xit_enable_changed(void);
