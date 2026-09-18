@@ -3791,10 +3791,68 @@ static void tci_send_cw_macros_delay(CLIENT *client) {
 }
 
 
-static int tci_parse_text(char *s, TCI_CMD *c) {
+//
+// Skip the "[json]{...}" argument that Thetis accepts in "spot". p points just
+// after the opening '{'. Returns the character after the matching '}', or the
+// terminating NUL if the object is never closed. Same rules as
+// splitTextCommands() in Thetis TCIServer.cs: a backslash escapes the next
+// character, and braces inside double quotes do not count.
+//
+static char *tci_skip_json_object(char *p) {
+  int depth = 1;
+  bool in_quotes = false;
+  for (; *p != 0; p++) {
+    if (*p == '\\') {
+      if (p[1] == 0) { break; }
+      p++;
+      continue;
+    }
+    if (*p == '"') {
+      in_quotes = !in_quotes;
+      continue;
+    }
+    if (in_quotes) { continue; }
+    if (*p == '{') {
+      depth++;
+    } else if (*p == '}' && --depth == 0) {
+      return p + 1;
+    }
+  }
+  return p;
+}
+
+//
+// Return the ';' that ends the command starting at s, or NULL if the frame
+// ends first. The TCI specification replaces ';' with '*' inside the text
+// arguments of the standard commands, so the first ';' is the terminator.
+// The JSON argument of a Thetis "spot" is raw text and a ';' in one of its
+// strings is not a terminator: without skipping the object, the rest of a DX
+// cluster comment would run as TCI commands.
+//
+static char *tci_command_end(char *s) {
+  char *p = strpbrk(s, ":;");
+  if (p == NULL || *p == ';') { return p; }
+  if (p - s != 4 || g_ascii_strncasecmp(s, "spot", 4) != 0) { return strchr(p, ';'); }
+  p++;
+  while (*p != 0 && *p != ';') {
+    if (g_ascii_strncasecmp(p, "[json]{", 7) == 0) {
+      p = tci_skip_json_object(p + 7);
+    } else {
+      p++;
+    }
+  }
+  return *p == ';' ? p : NULL;
+}
+
+//
+// Parse the command at the start of s and set *next to the text behind its
+// terminator, or to NULL if the command runs to the end of the frame.
+//
+static int tci_parse_text(char *s, TCI_CMD *c, char **next) {
   int argc = 0;
-  if (s == NULL || c == NULL) { return -1; }
+  if (s == NULL || c == NULL || next == NULL) { return -1; }
   memset(c, 0, sizeof(*c));
+  *next = NULL;
   /*
    * Native RTTY text uses a bracketed payload so ':' ',' and ';' remain
    * ordinary text characters:
@@ -3805,23 +3863,16 @@ static int tci_parse_text(char *s, TCI_CMD *c) {
    * of the ITA2 alphabet, so no additional bracket escaping is required.
    * Keep this special case local to RTTY_TEXT; normal TCI parsing is
    * deliberately unchanged.
+   *
+   * Since the payload cannot contain ']', the first "];" is the end, and
+   * another command may follow it in the same frame.
    */
   if (g_ascii_strncasecmp(s, "rtty_text:[", 11) == 0) {
-    char *end = g_strrstr(s + 11, "];");
+    char *end = strstr(s + 11, "];");
     if (end == NULL) {
       return -1;
     }
-    /*
-     * Some TCI test clients leave CR/LF or whitespace behind the command
-     * terminator.  Normal TCI parsing already tolerates that by stopping at
-     * the first ';'.  Do the equivalent here without treating semicolons
-     * inside the bracketed RTTY payload as terminators.
-     */
-    for (char *p = end + 2; *p != 0; p++) {
-      if (!g_ascii_isspace(*p)) {
-        return -1;
-      }
-    }
+    *next = end + 2;
     s[9] = 0;                 /* command ends before ':' */
     *end = 0;                 /* strip closing ']' and final ';' */
     c->cmd = s;
@@ -3829,8 +3880,11 @@ static int tci_parse_text(char *s, TCI_CMD *c) {
     c->argc = 1;
     return 0;
   }
-  char *end = strchr(s, ';');
-  if (end != NULL) { *end = 0; }
+  char *end = tci_command_end(s);
+  if (end != NULL) {
+    *end = 0;
+    *next = end + 1;
+  }
   c->cmd = s;
   char *p = strchr(s, ':');
   if (p == NULL) { return 0; }
@@ -6747,10 +6801,8 @@ static const TCI_DISPATCH tci_dispatch[] = {
   { NULL,                0,  0, NULL }
 };
 
-static void tci_handle_text(CLIENT *client, char *msg) {
-  TCI_CMD cmd;
-  if (tci_parse_text(msg, &cmd) < 0 || cmd.cmd == NULL) { return; }
-  for (char *p = cmd.cmd; *p != 0; p++) {
+static void tci_handle_command(CLIENT *client, TCI_CMD *cmd) {
+  for (char *p = cmd->cmd; *p != 0; p++) {
     *p = g_ascii_tolower(*p);
   }
   //
@@ -6761,9 +6813,9 @@ static void tci_handle_text(CLIENT *client, char *msg) {
   // saying anything.
   //
   if (rigctl_debug || tci_debug) {
-    t_print("TCI%d command=%s argc=%d\n", client->seq, cmd.cmd, cmd.argc);
-    for (int i = 0; i < cmd.argc; i++) {
-      t_print("  arg[%d]=%s\n", i, cmd.argv[i] ? cmd.argv[i] : "(null)");
+    t_print("TCI%d command=%s argc=%d\n", client->seq, cmd->cmd, cmd->argc);
+    for (int i = 0; i < cmd->argc; i++) {
+      t_print("  arg[%d]=%s\n", i, cmd->argv[i] ? cmd->argv[i] : "(null)");
     }
   }
   /*
@@ -6771,28 +6823,28 @@ static void tci_handle_text(CLIENT *client, char *msg) {
    * negotiate it with "rtty_enable:1;" before any rtty_* command is accepted.
    * Keep the gate here so future rtty_* commands are protected automatically.
    */
-  if (g_str_has_prefix(cmd.cmd, "rtty_") &&
-      strcmp(cmd.cmd, "rtty_enable") != 0 &&
+  if (g_str_has_prefix(cmd->cmd, "rtty_") &&
+      strcmp(cmd->cmd, "rtty_enable") != 0 &&
       !client->rtty_enabled) {
     if (rigctl_debug || tci_debug) {
-      t_print("TCI%d %s ignored: RTTY extension not enabled\n", client->seq, cmd.cmd);
+      t_print("TCI%d %s ignored: RTTY extension not enabled\n", client->seq, cmd->cmd);
     }
     return;
   }
   bool handled = false;
   for (int i = 0; tci_dispatch[i].name != NULL; i++) {
     const TCI_DISPATCH *d = &tci_dispatch[i];
-    if (cmd.cmd[0] != d->name[0] || strcmp(cmd.cmd, d->name) != 0) { continue; }
+    if (cmd->cmd[0] != d->name[0] || strcmp(cmd->cmd, d->name) != 0) { continue; }
     handled = true;
-    if (cmd.argc < d->min_args) {
-      t_print("TCI%d %s: too few args (%d < %d)\n", client->seq, d->name, cmd.argc, d->min_args);
+    if (cmd->argc < d->min_args) {
+      t_print("TCI%d %s: too few args (%d < %d)\n", client->seq, d->name, cmd->argc, d->min_args);
       return;
     }
-    if (d->max_args >= 0 && cmd.argc > d->max_args) {
-      t_print("TCI%d %s: too many args (%d > %d)\n", client->seq, d->name, cmd.argc, d->max_args);
+    if (d->max_args >= 0 && cmd->argc > d->max_args) {
+      t_print("TCI%d %s: too many args (%d > %d)\n", client->seq, d->name, cmd->argc, d->max_args);
       return;
     }
-    d->handler(client, &cmd);
+    d->handler(client, cmd);
     return;
   }
   if (!handled) {
@@ -6812,8 +6864,32 @@ static void tci_handle_text(CLIENT *client, char *msg) {
     if (client->unknown_cmd_count <= 10 || (client->unknown_cmd_count % 100) == 0) {
       t_print("TCI%d unknown command (%llu so far, no answer is possible): %s\n",
               client->seq, (unsigned long long) client->unknown_cmd_count,
-              cmd.cmd ? cmd.cmd : "(null)");
+              cmd->cmd ? cmd->cmd : "(null)");
     }
+  }
+}
+
+//
+// A text frame can carry several commands, as in
+// "modulation:0,lsb;rx_filter_band:0,-2800,-200;", and they run in order.
+// Only the first one used to run, and the rest was dropped without a trace.
+// Whitespace and empty commands between them are skipped, because some
+// clients leave CR/LF behind the last ';'.
+//
+static void tci_handle_text(CLIENT *client, char *msg) {
+  char *next = msg;
+  while (next != NULL) {
+    TCI_CMD cmd;
+    char *s = next;
+    while (g_ascii_isspace(*s) || *s == ';') { s++; }
+    if (*s == 0) { return; }
+    if (tci_parse_text(s, &cmd, &next) < 0) {
+      if (rigctl_debug || tci_debug) {
+        t_print("TCI%d unterminated command, rest of frame dropped: %.40s\n", client->seq, s);
+      }
+      return;
+    }
+    tci_handle_command(client, &cmd);
   }
 }
 
