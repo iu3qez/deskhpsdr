@@ -1,8 +1,8 @@
 # deskHPSDR TCI Remote Extensions
 
 This document specifies a set of opt-in additions to deskHPSDR's TCI 2.0
-server: a binary spectrum stream, three CAT-like commands, WebSocket
-compression, and a configurable bind address. It is written for a reader
+server: a binary spectrum stream, three CAT-like commands, three VFO
+copy commands, WebSocket compression, and a configurable bind address. It is written for a reader
 who has never seen deskHPSDR's source: every offset, constant and reply
 string below is meant to match `src/tci_spectrum.h` and `src/tci.c`
 byte for byte and character for character. If it does not, the source is
@@ -20,6 +20,8 @@ extensions add:
 - `rx_att_ex`, `band_ex` and `modulation_ex`, three additional CAT-like
   text commands for attenuation/gain, band changes and the CW sideband of
   the current mode;
+- `vfo_swap_ex`, `vfo_a_to_b_ex` and `vfo_b_to_a_ex`, which swap or copy
+  the whole VFO as the A<>B, A>B and B>A buttons do;
 - optional `permessage-deflate` WebSocket compression;
 - a configurable bind address for the TCI and rigctl TCP listeners.
 
@@ -30,14 +32,14 @@ actively streaming spectrum data. No existing command, reply or event is
 changed, renamed or reordered. Stock TCI clients (Thetis, ExpertSDR-like
 clients, ordinary TOTW-style browser clients) see identical behavior to
 a deskHPSDR build without these extensions, aside from the WebSocket
-compression a browser negotiates by default in its handshake (section 6).
+compression a browser negotiates by default in its handshake (section 7).
 
 **There is no authentication.** TCI never had one, and this extension
 adds none: any client that can open a WebSocket to port 40001 can read
 the spectrum, change attenuation and change bands. Do not expose the
 port to the open Internet. Run it inside a private network, and for
 remote access use WireGuard or an equivalent VPN. The bind address
-(section 7) is the only access control available, and it is a network
+(section 8) is the only access control available, and it is a network
 perimeter control, not authentication.
 
 ## 2. Spectrum stream
@@ -172,7 +174,7 @@ sends `spectrum_fps:<rx>,<fps>;` to the affected client only.
 A frame that is still waiting when a new one is produced is *replaced*,
 never queued behind its predecessor: a slow client always gets the
 freshest data, at the cost of gaps in `seq`. A gap in `seq` is exactly
-the count of replaced frames, and is the signal the probe (section 8)
+the count of replaced frames, and is the signal the probe (section 9)
 reports as "seq gaps".
 
 **Priority is audio first, always.** The slot is written only when the
@@ -227,7 +229,7 @@ At the negotiation defaults (512 bins, 10 fps), each frame is
 `64 + 32 + 512 = 608` bytes, i.e. roughly `608 * 8 * 10 ≈ 49` kbit/s of
 raw payload before any transport overhead or compression — the
 "under 50 kbit/s" figure referenced in the plan's goal. With
-`permessage-deflate` negotiated (section 6), this is typically well
+`permessage-deflate` negotiated (section 7), this is typically well
 below that; the exact figure depends on the entropy of the current
 scene and should be measured on the link in question, not assumed.
 
@@ -319,7 +321,39 @@ Setting the mode stays with `modulation`, which accepts `cwl` and `cwu`
 as well as `cw` (taken as CWU). `modulation_ex` with a mode argument is
 ignored.
 
-## 6. `permessage-deflate`
+## 6. `vfo_swap_ex`, `vfo_a_to_b_ex`, `vfo_b_to_a_ex`: A<>B, A>B and B>A
+
+`vfo:0,1,<Hz>;` copies a frequency and nothing else. These three
+commands do what the A<>B, A>B and B>A buttons and CAT `ZZVS` do: they
+move the whole VFO, that is band, band stack, frequency, CTUN, RIT/XIT,
+mode, filter and step. With one receiver, A<>B is how the operator puts
+RX1 on what was VFO B.
+
+| Command | Action | CAT |
+|---|---|---|
+| `vfo_swap_ex;` | A<>B: VFO A and VFO B are swapped | `ZZVS2;` |
+| `vfo_a_to_b_ex;` | A>B: VFO A is copied into VFO B | `ZZVS0;` |
+| `vfo_b_to_a_ex;` | B>A: VFO B is copied into VFO A | `ZZVS1;` |
+
+The commands take no argument and have no reply; a command with an
+argument is ignored. The result reaches every client, the sender
+included, as the same messages a swap from the GUI or CAT produces:
+`dds:0`, `vfo:0,0`, `vfo:0,1`, `modulation:0` and `rx_filter_band:0`
+(plus `digu_offset` or `digl_offset` in DIGU or DIGL), then the same
+for receiver 1 while RX2 runs, then `tx_frequency`,
+`drive`, `tune_drive` and `split_enable`. With one receiver a client
+subscribed to `modulation_ex` also gets `modulation:1` (section 5).
+
+`vfo_swap_ex` has the name and the form of the Thetis command. Thetis
+has no copy command; the two copy names follow the deskHPSDR functions
+`vfo_a_to_b()` and `vfo_b_to_a()`.
+
+Like the buttons, the commands are accepted while transmitting. They
+share the set-lock of `vfo`: a command that arrives within 200 ms of a
+`vfo` set or a copy command from another client is ignored, with a line
+in the log.
+
+## 7. `permessage-deflate`
 
 The server offers RFC 7692 `permessage-deflate` compression
 (`client_no_context_takeover; client_max_window_bits`) in the WebSocket
@@ -338,7 +372,7 @@ new code path for any client to opt into, and no reply format changes.
   compiles and runs unchanged; it logs that `permessage-deflate` is not
   available and serves every client uncompressed, as today.
 
-## 7. Bind address
+## 8. Bind address
 
 Two configuration properties restrict which interface deskHPSDR's
 network servers listen on:
@@ -371,7 +405,7 @@ parks the vhost on its deferred no-listener list and still reports a
 successfully created context, which would leave the server up with no
 listening socket and no visible error.
 
-## 8. The Python probe
+## 9. The Python probe
 
 `stuff/tci_spectrum_probe.py` is a standalone script (PEP 723 `uv`
 header, `websockets` dependency) used to exercise every command and
@@ -392,7 +426,7 @@ it back, proving the parser against the layout in section 2.3 without
 needing a radio. Run `uv run --script stuff/tci_spectrum_probe.py --help`
 (or `<subcommand> --help`) for the full option list and more examples.
 
-## 9. Compatibility notes
+## 10. Compatibility notes
 
 - `type=4` and `format=4` were chosen because the ExpertSDR TCI
   specification this server otherwise follows only assigns 0-3. A
