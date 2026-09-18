@@ -75,6 +75,7 @@ typedef struct _receiver {
   int fps;
   int displaying;
   int audio_channel; // STEREO or LEFT or RIGHT
+  double balance;    // -1.0 = full left ... 0.0 = centre ... +1.0 = full right
   int sample_rate;
   int pixels;
   int samples;

@@ -49,6 +49,13 @@ static GtkWidget *p2_jitter_depth_b = NULL;
 #endif
 static GtkWidget *rx_menu_headerbar = NULL;
 static GtkWidget *rx_menu_stack = NULL;
+//
+// One balance slider per receiver page. Kept here because audio_channel_cb()
+// has to grey it out when the channel selector leaves STEREO, and the two
+// widgets are built by different helpers.
+//
+#define RX_MENU_MAX_RX 2
+static GtkWidget *balance_scale[RX_MENU_MAX_RX] = { NULL };
 #ifdef PULSEAUDIO
   #define RX_MENU_TAB_COUNT 4
 #else
@@ -79,6 +86,9 @@ static void cleanup(void) {
 #endif
     for (int i = 0; i < RX_MENU_TAB_COUNT; i++) {
       rx_menu_tab_buttons[i] = NULL;
+    }
+    for (int i = 0; i < RX_MENU_MAX_RX; i++) {
+      balance_scale[i] = NULL;
     }
     sub_menu = NULL;
     active_menu  = NO_MENU;
@@ -454,6 +464,20 @@ static void local_output_changed_cb(GtkWidget *widget, gpointer data) {
   t_print("local_output_changed rx=%d local_audio=%d\n", rx->id, rx->local_audio);
 }
 
+//
+// The balance only makes sense while both channels are alive. With LEFT or
+// RIGHT one side is already hard-muted upstream, so a balance would act as a
+// plain attenuator on the surviving channel - confusing rather than useful.
+//
+static void update_balance_sensitivity(const RECEIVER *rx) {
+  if (rx == NULL || rx->id < 0 || rx->id >= RX_MENU_MAX_RX) {
+    return;
+  }
+  if (balance_scale[rx->id] != NULL) {
+    gtk_widget_set_sensitive(balance_scale[rx->id], rx->audio_channel == STEREO);
+  }
+}
+
 static void audio_channel_cb(GtkWidget *widget, gpointer data) {
   RECEIVER *rx = rx_from_data(data);
   int val = gtk_combo_box_get_active(GTK_COMBO_BOX(widget));
@@ -467,6 +491,27 @@ static void audio_channel_cb(GtkWidget *widget, gpointer data) {
   case 2:
     rx->audio_channel = RIGHT;
     break;
+  }
+  update_balance_sensitivity(rx);
+}
+
+static void balance_cb(GtkWidget *widget, gpointer data) {
+  RECEIVER *rx = rx_from_data(data);
+  if (rx == NULL) {
+    return;
+  }
+  rx->balance = gtk_range_get_value(GTK_RANGE(widget));
+}
+
+static void balance_centre_cb(GtkWidget *widget, gpointer data) {
+  (void)widget;
+  RECEIVER *rx = rx_from_data(data);
+  if (rx == NULL || rx->id < 0 || rx->id >= RX_MENU_MAX_RX) {
+    return;
+  }
+  rx->balance = 0.0;
+  if (balance_scale[rx->id] != NULL) {
+    gtk_range_set_value(GTK_RANGE(balance_scale[rx->id]), 0.0);
   }
 }
 
@@ -819,6 +864,44 @@ static void add_local_audio_controls(GtkWidget *grid, RECEIVER *rx, int *row) {
   add_local_audio_controls_at(grid, rx, row, audio_row, audio_row + 1, audio_row + 2);
 }
 
+//
+// Stereo balance for the computer audio output of this receiver. With two
+// receivers on the same device this is what lets you place RX1 and RX2 at
+// different positions while still hearing both in both ears, instead of the
+// hard left/right split offered by the channel selector above.
+//
+static void add_balance_control(GtkWidget *grid, RECEIVER *rx, int *row) {
+  if (n_output_devices <= 0 || rx == NULL || rx->id < 0 || rx->id >= RX_MENU_MAX_RX) {
+    return;
+  }
+  GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+  GtkWidget *label = gtk_label_new("Balance");
+  gtk_widget_set_name(label, "boldlabel");
+  gtk_widget_set_halign(label, GTK_ALIGN_START);
+  gtk_box_pack_start(GTK_BOX(box), label, FALSE, FALSE, 0);
+  GtkWidget *scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, -1.0, 1.0, 0.05);
+  gtk_range_set_value(GTK_RANGE(scale), rx->balance);
+  gtk_scale_set_draw_value(GTK_SCALE(scale), FALSE);
+  gtk_scale_add_mark(GTK_SCALE(scale), -1.0, GTK_POS_BOTTOM, "L");
+  gtk_scale_add_mark(GTK_SCALE(scale),  0.0, GTK_POS_BOTTOM, "C");
+  gtk_scale_add_mark(GTK_SCALE(scale),  1.0, GTK_POS_BOTTOM, "R");
+  gtk_widget_set_size_request(scale, 260, -1);
+  gtk_widget_set_tooltip_text(scale,
+                              "Stereo position of this receiver in the computer audio output.\n"
+                              "Affects the local audio only, never the audio sent to the radio.\n"
+                              "Requires the channel selector to be set to Stereo.");
+  g_signal_connect(scale, "value-changed", G_CALLBACK(balance_cb), rx);
+  gtk_box_pack_start(GTK_BOX(box), scale, TRUE, TRUE, 0);
+  GtkWidget *centre_b = gtk_button_new_with_label("Centre");
+  gtk_widget_set_tooltip_text(centre_b, "Reset the balance to the centre position");
+  g_signal_connect(centre_b, "clicked", G_CALLBACK(balance_centre_cb), rx);
+  gtk_box_pack_start(GTK_BOX(box), centre_b, FALSE, FALSE, 0);
+  balance_scale[rx->id] = scale;
+  update_balance_sensitivity(rx);
+  gtk_grid_attach(GTK_GRID(grid), box, 0, *row, 3, 1);
+  (*row)++;
+}
+
 
 
 static void p2_jitter_toggle_cb(GtkToggleButton *button, gpointer data) {
@@ -1156,6 +1239,7 @@ static GtkWidget *build_rx_page(RECEIVER *rx) {
   } else {
     add_local_audio_controls(grid, rx, &row);
   }
+  add_balance_control(grid, rx, &row);
   add_digi_offset_controls(grid, rx, &row);
   return grid;
 }
@@ -1181,6 +1265,9 @@ void rx_menu(GtkWidget *parent) {
   gtk_widget_set_margin_end(outer, 8);
   for (int i = 0; i < RX_MENU_TAB_COUNT; i++) {
     rx_menu_tab_buttons[i] = NULL;
+  }
+  for (int i = 0; i < RX_MENU_MAX_RX; i++) {
+    balance_scale[i] = NULL;
   }
   GtkWidget *tabbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
   gtk_widget_set_halign(tabbar, GTK_ALIGN_START);

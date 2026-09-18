@@ -293,6 +293,7 @@ void rx_save_state(const RECEIVER *rx) {
   //
   if (rx->id == PS_RX_FEEDBACK) { return; }
   SetPropI1("receiver.%d.audio_channel", rx->id,                rx->audio_channel);
+  SetPropF1("receiver.%d.balance", rx->id,                      rx->balance);
   SetPropI1("receiver.%d.local_audio", rx->id,                  rx->local_audio);
   SetPropI1("receiver.%d.local_audio_mute", rx->id,             rx->local_audio_mute);
   SetPropS1("receiver.%d.audio_name", rx->id,                   rx->audio_name);
@@ -422,6 +423,7 @@ void rx_restore_state(RECEIVER *rx) {
   //
   if (rx->id == PS_RX_FEEDBACK) { return; }
   GetPropI1("receiver.%d.audio_channel", rx->id,                rx->audio_channel);
+  GetPropF1("receiver.%d.balance", rx->id,                      rx->balance);
   GetPropI1("receiver.%d.local_audio", rx->id,                  rx->local_audio);
   GetPropI1("receiver.%d.local_audio_mute", rx->id,             rx->local_audio_mute);
   GetPropS1("receiver.%d.audio_name", rx->id,                   rx->audio_name);
@@ -1026,6 +1028,7 @@ RECEIVER *rx_create_receiver(int id, int pixels, int width, int height) {
 #endif
   rx->mute_when_not_active = 0;
   rx->audio_channel = STEREO;
+  rx->balance = 0.0;
   rx->audio_device = -1;
   rx->squelch_enable = 0;
   rx->local_audio_mute = 0;
@@ -1494,6 +1497,26 @@ static void rx_process_buffer(RECEIVER *rx) {
   // into the same local output stream during DUPLEX TX.
   int tx_monitor_replaces_local_audio =
           xmit && rx == active_receiver && tx_monitor_audio_active();
+  //
+  // Stereo balance for the local audio sink only. This is a "balance" and not
+  // a pan: the WDSP output is already two channels (identical unless binaural
+  // is on), so we attenuate the opposite side instead of distributing a mono
+  // source. At -1.0/0.0/+1.0 the result is bit-identical to LEFT/STEREO/RIGHT,
+  // which keeps audio_channel and this control consistent with each other.
+  // Computed once per buffer: rx->balance may be changed by the GUI thread
+  // while we are running, and re-reading it per sample would let the gain
+  // step in the middle of a block.
+  //
+  // With LEFT or RIGHT one side is already hard-muted below, and a balance
+  // would degenerate into an attenuator on the surviving channel. The GUI
+  // greys the slider out in that case, so ignore it here as well and keep the
+  // two in agreement.
+  //
+  double balance = (rx->audio_channel == STEREO) ? rx->balance : 0.0;
+  if (balance < -1.0) { balance = -1.0; }
+  if (balance >  1.0) { balance =  1.0; }
+  double balance_gain_left  = balance > 0.0 ? 1.0 - balance : 1.0;
+  double balance_gain_right = balance < 0.0 ? 1.0 + balance : 1.0;
   for (int i = 0; i < rx->output_samples; i++) {
     double left_sample = rx->audio_output_buffer[i * 2];
     double right_sample = rx->audio_output_buffer[(i * 2) + 1];
@@ -1563,7 +1586,15 @@ static void rx_process_buffer(RECEIVER *rx) {
     if (right_sample < -1.0f) { right_sample = -1.0f; }
     short right_audio_sample = (short)(right_sample * 32767.0f);
     if (rx->local_audio && !tx_monitor_replaces_local_audio) {
-      audio_write(rx, (float) left_sample, (float) right_sample);
+      //
+      // The balance is applied here and not above the audio_channel switch on
+      // purpose: everything above this point also feeds the audio stream that
+      // goes back to the radio, and that path must keep behaving exactly as
+      // before.
+      //
+      audio_write(rx,
+                  (float)(left_sample  * balance_gain_left),
+                  (float)(right_sample * balance_gain_right));
     }
     if (rx == active_receiver) {
       switch (protocol) {
