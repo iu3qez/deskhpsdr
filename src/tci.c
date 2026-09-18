@@ -217,6 +217,7 @@ typedef struct _client {
   int tx_audio_session;
   int tx_audio_enabled;
   int rtty_enabled;             // Native RTTY extension explicitly enabled by this client
+  int modulation_ex;            // 1 once the client queried modulation_ex
   guint64 unknown_cmd_count;    // Commands this client sent that no handler claimed
   gint64 tx_chrono_next_us;
   guint tx_chrono_tick;
@@ -3523,6 +3524,34 @@ static const char *tci_mode_name(int m) {
   }
 }
 
+//
+// modulation_ex: the mode as modulation reports it, except that the two CW
+// sidebands keep their own names, which standard TCI folds into "CW".
+//
+//   query   modulation_ex:<rx>;       reply modulation_ex:<rx>,<mode>;
+//
+// The query is also the opt-in: from then on the client gets modulation_ex
+// right after every modulation it is sent. Setting a mode stays with
+// modulation, which already accepts cwl and cwu.
+//
+static const char *tci_mode_name_ex(int m) {
+  switch (m) {
+  case modeCWL:
+    return "CWL";
+  case modeCWU:
+    return "CWU";
+  default:
+    return tci_mode_name(m);
+  }
+}
+
+static void tci_send_modulation_ex(CLIENT *client, int v, int m) {
+  char msg[MAXMSGSIZE];
+  snprintf(msg, MAXMSGSIZE, "%s:%d,%s;", tci_cmd_name("modulation_ex", "MODULATION_EX"), v,
+           tci_mode_name_ex(m));
+  tci_send_text(client, msg);
+}
+
 static void tci_send_mode_value(CLIENT *client, int v, int m) {
   char msg[MAXMSGSIZE];
   if (client == NULL) { return; }
@@ -3530,6 +3559,9 @@ static void tci_send_mode_value(CLIENT *client, int v, int m) {
   if (v >= receivers || receiver[v] == NULL) { return; }
   snprintf(msg, MAXMSGSIZE, "modulation:%d,%s;", v, tci_mode_name(m));
   tci_send_text(client, msg);
+  if (client->modulation_ex) {
+    tci_send_modulation_ex(client, v, m);
+  }
   if (v == 0) {
     client->last_ma = m;
   } else {
@@ -5200,6 +5232,17 @@ static void tci_cmd_modulation(CLIENT *client, const TCI_CMD *cmd) {
   }
 }
 
+static void tci_cmd_modulation_ex(CLIENT *client, const TCI_CMD *cmd) {
+  int v = tci_int(cmd->argv[0], -1);
+  // the client knows the command, whichever receiver it asked about
+  client->modulation_ex = 1;
+  if (v < 0 || v > 1 || v >= receivers || receiver[v] == NULL) {
+    t_print("TCI%d modulation_ex ignored: invalid receiver %d\n", client->seq, v);
+    return;
+  }
+  tci_send_modulation_ex(client, v, vfo[v].mode);
+}
+
 static void tci_cmd_vfo(CLIENT *client, const TCI_CMD *cmd) {
   int VfoNr = tci_int(cmd->argv[0], 0);
   int Ch = tci_int(cmd->argv[1], 0);
@@ -6548,6 +6591,7 @@ static const TCI_DISPATCH tci_dispatch[] = {
   { "audio_start",       1,  1, tci_cmd_audio_start },
   { "audio_stop",        1,  1, tci_cmd_audio_stop },
   { "modulation",        1,  2, tci_cmd_modulation },
+  { "modulation_ex",     1,  1, tci_cmd_modulation_ex },
   { "vfo",               2,  3, tci_cmd_vfo },
   { "rx_smeter",         1,  3, tci_cmd_rx_smeter },
   { "drive",             0,  2, tci_cmd_drive },
@@ -6833,6 +6877,7 @@ static void tci_init_client(CLIENT *client, int fd, int seq) {
   client->tx_audio_session = 0;
   client->tx_audio_enabled = 0;
   client->rtty_enabled = 0;
+  client->modulation_ex = 0;
   client->unknown_cmd_count = 0;
   client->text_rx_buf = NULL;
   client->text_rx_len = 0;
