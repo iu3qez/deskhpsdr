@@ -3634,11 +3634,23 @@ static void tci_send_modulation_ex(CLIENT *client, int v, int m) {
   tci_send_text(client, msg);
 }
 
+//
+// Whether the client is told the mode at index v, which is a VFO index.
+// VFO B has a mode also while one receiver runs, and in split the radio
+// transmits in it (vfo_get_tx_mode()). A client that queried modulation_ex
+// gets index 1 with any number of receivers; any other client gets it only
+// while RX2 runs.
+//
+static int tci_mode_reported(const CLIENT *client, int v) {
+  if (v < 0 || v > 1) { return 0; }
+  if (v < receivers && receiver[v] != NULL) { return 1; }
+  return v == VFO_B && client->modulation_ex;
+}
+
 static void tci_send_mode_value(CLIENT *client, int v, int m) {
   char msg[MAXMSGSIZE];
   if (client == NULL) { return; }
-  if (v < 0 || v > 1) { return; }
-  if (v >= receivers || receiver[v] == NULL) { return; }
+  if (!tci_mode_reported(client, v)) { return; }
   snprintf(msg, MAXMSGSIZE, "modulation:%d,%s;", v, tci_mode_name(m));
   tci_send_text(client, msg);
   if (client->modulation_ex) {
@@ -3673,6 +3685,22 @@ static void tci_broadcast_mode_value(int v, int m) {
   tci_clients_snapshot_free(clients);
 }
 
+//
+// VFO B's mode while one receiver runs. No receiver listens on VFO B, so the
+// rx_filter_band and DIGU/DIGL offset that tci_broadcast_mode_value() adds
+// are left out. tci_send_mode_value() picks the clients.
+//
+static void tci_broadcast_vfo_b_mode(void) {
+  GList *clients = tci_clients_snapshot();
+  for (GList *l = clients; l != NULL; l = l->next) {
+    CLIENT *client = (CLIENT *) l->data;
+    if (client != NULL && client->running) {
+      tci_send_mode(client, VFO_B);
+    }
+  }
+  tci_clients_snapshot_free(clients);
+}
+
 void tci_vfo_changed(int id) {
   if (!tci_running) { return; }
   if (id == VFO_A) {
@@ -3699,6 +3727,8 @@ void tci_vfos_changed(void) {
     tci_broadcast_vfo(VFO_B, 0);
     tci_broadcast_vfo(VFO_B, 1);
     tci_broadcast_mode_value(VFO_B, vfo[VFO_B].mode);
+  } else {
+    tci_broadcast_vfo_b_mode();
   }
   tci_broadcast_txfreq();
   tci_broadcast_drive();
@@ -5422,10 +5452,10 @@ static void tci_cmd_modulation(CLIENT *client, const TCI_CMD *cmd) {
 
 static void tci_cmd_modulation_ex(CLIENT *client, const TCI_CMD *cmd) {
   int v = tci_int(cmd->argv[0], -1);
-  // the client knows the command, whichever receiver it asked about
+  // the client knows the command, whichever VFO it asked about
   client->modulation_ex = 1;
-  if (v < 0 || v > 1 || v >= receivers || receiver[v] == NULL) {
-    t_print("TCI%d modulation_ex ignored: invalid receiver %d\n", client->seq, v);
+  if (!tci_mode_reported(client, v)) {
+    t_print("TCI%d modulation_ex ignored: invalid VFO %d\n", client->seq, v);
     return;
   }
   tci_send_modulation_ex(client, v, vfo[v].mode);
@@ -7036,7 +7066,8 @@ static gboolean tci_reporter(gpointer data) {
       tci_send_rx_filter_band(client, 0);
     }
     if (mb  != client->last_mb) {
-      if (receivers > 1) {
+      // rx_filter_band sends nothing for VFO B while one receiver runs
+      if (receivers > 1 || client->modulation_ex) {
         tci_send_mode(client, 1);
         tci_send_rx_filter_band(client, 1);
       } else {

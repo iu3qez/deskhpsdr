@@ -306,6 +306,15 @@ long as the connection and has no unsubscribe; after a reconnect the
 client queries again. A query naming a VFO that does not exist still
 subscribes the client, and gets no reply.
 
+Index 1 is VFO B, which has a mode also while RX2 is off: in split the
+radio transmits in VFO B's mode. A subscribed client therefore gets
+index 1 with one receiver too. `modulation:1;` and `modulation_ex:1;`
+are answered, and `modulation:1,<mode>;` followed by
+`modulation_ex:1,<mode>;` is sent whenever VFO B's mode changes,
+including after A>B and A<>B. With one receiver `rx_filter_band:1` is
+not sent, and `modulation:1,<mode>;` as a set is ignored. A client that
+is not subscribed gets index 1 only while RX2 runs, as before.
+
 Setting the mode stays with `modulation`, which accepts `cwl` and `cwu`
 as well as `cw` (taken as CWU). `modulation_ex` with a mode argument is
 ignored.
