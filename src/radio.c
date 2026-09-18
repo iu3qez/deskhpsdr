@@ -255,10 +255,10 @@ int force_iob = 0;
 int display_zoompan = 0;
 int display_sliders = 0;
 
-#ifdef __APPLE__
+#ifdef AUDIO_RINGBUFFER
   int rx_audio_network_reserve_enabled = 0;
   int rx_audio_network_reserve_ms = 100;
-  int coreaudio_rx_latency_correction_enabled = 1;
+  int audio_rx_latency_correction_enabled = 1;
 #endif
 int display_extra_sliders = 1;
 int display_toolbar = 0;
@@ -393,8 +393,10 @@ int ozy_software_version;
 int mercury_software_version[2] = {0, 0};
 int penelope_software_version;
 
-int adc0_overload = 0;
-int adc1_overload = 0;
+int adc0_p_ovl = 0;
+int adc1_p_ovl = 0;
+int adc0_fs_ovl = 0;
+int adc1_fs_ovl = 0;
 int tx_fifo_underrun = 0;
 int tx_fifo_overrun = 0;
 int sequence_errors = 0;
@@ -1667,7 +1669,7 @@ void radio_start_radio(void) {
       // it does not fit  in windows 640 pixels wide.
       // if needed, the MAC address of the radio can be
       // found in the ABOUT menu.
-      snprintf(text, 1024, "%s by DL1BZ %s[%s] :: WDSP Version %d.%02d :: SDR Device: %s (%s) %s on %s [%s]",
+      snprintf(text, 1024, "%s by DL1BZ %s[%s] :: WDSP Version %d.%02d :: SDR Device: %s (%s) %s on %s [%s] :: %s",
                PGNAME,
                build_version,
                unameData.machine,
@@ -1677,7 +1679,8 @@ void radio_start_radio(void) {
                version,
                ip,
                iface,
-               p);
+               p,
+               build_audio);
     }
     break;
   }
@@ -1803,6 +1806,13 @@ void radio_start_radio(void) {
   radio_change_region(region);
   radio_create_visual();
   radio_reconfigure_screen();
+  // Apply the saved main-window position only after the startup window has
+  // been converted to the radio UI.  Doing this during radio_restore_state()
+  // visibly moved the still-active startup window while radio initialization
+  // was in progress.
+  if (!use_wayland && (window_x_pos < screen_width - 100) && (window_y_pos < screen_height - 100)) {
+    gtk_window_move(GTK_WINDOW(top_window), window_x_pos, window_y_pos);
+  }
   /*
    * The CW engine is used by CAT/TCI CW text paths and must not depend on
    * rigctl being enabled.  Start it once during radio initialization;
@@ -2098,7 +2108,7 @@ static void rxtx(int state) {
       }
       for (i = 0; i < receivers; i++) {
         gtk_fixed_put(GTK_FIXED(fixed), receiver[i]->panel, receiver[i]->x, receiver[i]->y);
-#ifdef COREAUDIO
+#ifdef AUDIO_RINGBUFFER
         audio_reprime_output(receiver[i]);
 #endif
         rx_on(receiver[i]);
@@ -2778,15 +2788,6 @@ static void radio_restore_state(void) {
   //
   if (display_width  > screen_width) { display_width  = screen_width; }
   if (display_height > screen_height) { display_height = screen_height; }
-  //
-  // Re-position top window to the position in the props file, provided
-  // there are at least 100 pixels left. This assumes the default setting
-  // (GDK_GRAVITY_NORTH_WEST) where the "position" refers to the top left corner
-  // of the window.
-  //
-  if (!use_wayland && (window_x_pos < screen_width - 100) && (window_y_pos < screen_height - 100)) {
-    gtk_window_move(GTK_WINDOW(top_window), window_x_pos, window_y_pos);
-  }
   GetPropC0("radio_bgcolor",                                 radio_bgcolor);
   GetPropC0("mwin_bgcolor",                                  mwin_bgcolor);
   GetPropC0("tx_pan_fill_col",                               tx_pan_fill_col);
@@ -2798,7 +2799,7 @@ static void radio_restore_state(void) {
   diversity_brick3_mode = diversity_brick3_mode ? 1 : 0;
   GetPropI0("p2_jitter_buffer_enabled",                       p2_jitter_buffer_enabled);
   GetPropI0("p2_jitter_buffer_depth_ms",                      p2_jitter_buffer_depth_ms);
-#ifdef __APPLE__
+#ifdef AUDIO_RINGBUFFER
   GetPropI0("rx_audio_network_reserve_enabled",                rx_audio_network_reserve_enabled);
   GetPropI0("rx_audio_network_reserve_ms",                     rx_audio_network_reserve_ms);
   rx_audio_network_reserve_enabled = rx_audio_network_reserve_enabled ? 1 : 0;
@@ -3130,7 +3131,7 @@ void radio_save_state(void) {
   SetPropI0("diversity_brick3_mode",                         diversity_brick3_mode);
   SetPropI0("p2_jitter_buffer_enabled",                       p2_jitter_buffer_enabled);
   SetPropI0("p2_jitter_buffer_depth_ms",                      p2_jitter_buffer_depth_ms);
-#ifdef __APPLE__
+#ifdef AUDIO_RINGBUFFER
   SetPropI0("rx_audio_network_reserve_enabled",                rx_audio_network_reserve_enabled);
   SetPropI0("rx_audio_network_reserve_ms",                     rx_audio_network_reserve_ms);
 #endif

@@ -58,13 +58,21 @@ static void cleanup(void) {
     gtk_widget_destroy(tmp);
     sub_menu = NULL;
     active_menu  = NO_MENU;
-    radio_save_state();
+    // radio_save_state();
   }
 }
 
 static gboolean close_cb(void) {
   cleanup();
   return TRUE;
+}
+
+static void destroy_cb(GtkWidget *widget, gpointer data) {
+  (void)widget;
+  (void)data;
+  dialog = NULL;
+  sub_menu = NULL;
+  active_menu = NO_MENU;
 }
 
 static void block_cat_rx_if_tune_cb(GtkWidget *widget, gpointer data) {
@@ -394,7 +402,7 @@ static void btn_toggle_cb(GtkWidget *widget, gpointer data) {
   *value = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(widget));
 }
 
-#ifdef COREAUDIO
+#ifdef AUDIO_RINGBUFFER
 static void chkbtn_toggle_cb(GtkWidget *widget, gpointer data) {
   int *value = (int *) data;
   *value = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(widget));
@@ -417,7 +425,7 @@ void rigctl_menu(GtkWidget *parent) {
   snprintf(_title, 32, "%s - CAT/TCI", PGNAME);
   gtk_header_bar_set_title(GTK_HEADER_BAR(headerbar), _title);
   g_signal_connect(dialog, "delete_event", G_CALLBACK(close_cb), NULL);
-  g_signal_connect(dialog, "destroy", G_CALLBACK(close_cb), NULL);
+  g_signal_connect(dialog, "destroy", G_CALLBACK(destroy_cb), NULL);
   GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
   GtkWidget *grid = gtk_grid_new();
   gtk_grid_set_row_spacing(GTK_GRID(grid), 5);
@@ -865,7 +873,7 @@ void rigctl_menu(GtkWidget *parent) {
   g_signal_connect(w, "toggled", G_CALLBACK(btn_toggle_cb), &tci_iq_conjugate);
   col--;
   //------------------------------------------------------------------------------------------------------------------------
-#ifdef COREAUDIO
+#ifdef AUDIO_RINGBUFFER
   w = gtk_check_button_new_with_label("TCI Audio Monitor");
   gtk_widget_set_tooltip_text(w,
                               "Switch on an audio monitor for incoming TCI Audio\n"

@@ -57,13 +57,21 @@ static void cleanup(void) {
     }
     sub_menu = NULL;
     active_menu  = NO_MENU;
-    radio_save_state();
+    // radio_save_state();
   }
 }
 
 static gboolean close_cb(void) {
   cleanup();
   return TRUE;
+}
+
+static void destroy_cb(GtkWidget *widget, gpointer data) {
+  (void)widget;
+  (void)data;
+  dialog = NULL;
+  sub_menu = NULL;
+  active_menu = NO_MENU;
 }
 
 static void set_toolbar_menu_title(GtkWidget *headerbar, int lfunction) {
@@ -198,7 +206,7 @@ void toolbar_menu(GtkWidget *parent) {
   gtk_header_bar_set_show_close_button(GTK_HEADER_BAR(toolbar_menu_headerbar), TRUE);
   set_toolbar_menu_title(toolbar_menu_headerbar, function);
   g_signal_connect(dialog, "delete_event", G_CALLBACK(close_cb), NULL);
-  g_signal_connect(dialog, "destroy", G_CALLBACK(close_cb), NULL);
+  g_signal_connect(dialog, "destroy", G_CALLBACK(destroy_cb), NULL);
   GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
   GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
   gtk_container_set_border_width(GTK_CONTAINER(box), 8);

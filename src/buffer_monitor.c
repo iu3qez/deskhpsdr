@@ -146,12 +146,10 @@ static void buffer_monitor_collect(void) {
       double ms = (double)diag.queued * 1000.0 / 48000.0;
       double target_ms = (double)diag.target * 1000.0 / 48000.0;
       double scale_samples = diag.high > 0 ? (double)diag.high : (double)diag.capacity;
-#ifdef COREAUDIO
-      g_snprintf(name, sizeof(name), "RX%d CoreAudio", rx + 1);
-#elif defined(PULSEAUDIO)
-      g_snprintf(name, sizeof(name), "RX%d PulseAudio", rx + 1);
+#ifdef MINIAUDIO
+      g_snprintf(name, sizeof(name), "RX%d miniaudio", rx + 1);
 #else
-      g_snprintf(name, sizeof(name), "RX%d ALSA", rx + 1);
+      g_snprintf(name, sizeof(name), "RX%d CoreAudio", rx + 1);
 #endif
       if (diag.target > 0) {
         g_snprintf(value, sizeof(value), "%.1f ms / %.0f ms", ms, target_ms);
@@ -160,7 +158,7 @@ static void buffer_monitor_collect(void) {
       }
       row_update(n++, name, value, ms,
                  (double)diag.queued / scale_samples, 1);
-#ifdef COREAUDIO
+#ifdef AUDIO_RINGBUFFER
       if (!radio_is_transmitting() && n < BUFFER_MONITOR_MAX_ROWS) {
         char corr_name[32];
         char corr_value[64];
@@ -184,16 +182,14 @@ static void buffer_monitor_collect(void) {
       char value[64];
       double ms = (double)diag.queued * 1000.0 / 48000.0;
       g_snprintf(value, sizeof(value), "%.1f ms", ms);
-#ifdef COREAUDIO
-      const char *mic_name = "Mic CoreAudio";
-#elif defined(PULSEAUDIO)
-      const char *mic_name = "Mic PulseAudio";
+#ifdef MINIAUDIO
+      const char *mic_name = "Mic miniaudio";
 #else
-      const char *mic_name = "Mic ALSA";
+      const char *mic_name = "Mic CoreAudio";
 #endif
       row_update(n++, mic_name, value, ms,
                  (double)diag.queued / (double)diag.capacity, 1);
-#ifdef COREAUDIO
+#ifdef AUDIO_RINGBUFFER
       if (radio_is_transmitting() && n < BUFFER_MONITOR_MAX_ROWS) {
         char corr_value[64];
         g_snprintf(corr_value, sizeof(corr_value), "LOW %u   HIGH %u",

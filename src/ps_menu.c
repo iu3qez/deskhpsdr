@@ -411,7 +411,7 @@ static void cleanup(void) {
     gtk_widget_destroy(tmp);
     sub_menu = NULL;
     active_menu  = NO_MENU;
-    radio_save_state();
+    // radio_save_state();
   }
 }
 
@@ -419,6 +419,14 @@ static gboolean close_cb(void) {
   radio_mox_update(0);
   cleanup();
   return TRUE;
+}
+
+static void destroy_cb(GtkWidget *widget, gpointer data) {
+  (void)widget;
+  (void)data;
+  dialog = NULL;
+  sub_menu = NULL;
+  active_menu = NO_MENU;
 }
 
 static void att_spin_cb(GtkWidget *widget, gpointer data) {
@@ -748,13 +756,6 @@ static void enable_cb(GtkWidget *widget, gpointer data) {
   }
 }
 
-#ifdef WDSP1
-static void tol_cb(GtkWidget *widget, gpointer data) {
-  transmitter->ps_ptol = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(widget));
-  tx_ps_setparams(transmitter);
-  ps_off_on();
-}
-#endif
 
 
 static void oneshot_cb(GtkWidget *widget, gpointer data) {
@@ -763,15 +764,7 @@ static void oneshot_cb(GtkWidget *widget, gpointer data) {
   ps_off_on();
 }
 
-#ifdef WDSP1
-static void map_cb(GtkWidget *widget, gpointer data) {
-  transmitter->ps_map = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(widget));
-  tx_ps_setparams(transmitter);
-  ps_off_on();
-}
-#endif
 
-#ifndef WDSP1
 static void tolerance_mode_cb(GtkComboBox *combo, gpointer data) {
   int mode = gtk_combo_box_get_active(combo);
   if (mode < 0 || mode > 2 || mode == transmitter->ps_tolerance_mode) {
@@ -781,7 +774,6 @@ static void tolerance_mode_cb(GtkComboBox *combo, gpointer data) {
   tx_ps_setparams(transmitter);
   ps_off_on();
 }
-#endif
 
 
 static void auto_cb(GtkWidget *widget, gpointer data) {
@@ -877,7 +869,6 @@ void ps_menu(GtkWidget *parent) {
   int i;
   char text[16];
   dialog = gtk_dialog_new();
-  g_signal_connect(dialog, "destroy", G_CALLBACK(close_cb), NULL);
   gtk_window_set_transient_for(GTK_WINDOW(dialog), GTK_WINDOW(parent));
   gtk_window_set_position(GTK_WINDOW(dialog), GTK_WIN_POS_CENTER_ON_PARENT);
   win_set_bgcolor(dialog, &mwin_bgcolor);
@@ -888,7 +879,7 @@ void ps_menu(GtkWidget *parent) {
   snprintf(_title, sizeof(_title), "%s - Pure Signal", PGNAME);
   gtk_header_bar_set_title(GTK_HEADER_BAR(headerbar), _title);
   g_signal_connect(dialog, "delete_event", G_CALLBACK(close_cb), NULL);
-  g_signal_connect(dialog, "destroy", G_CALLBACK(close_cb), NULL);
+  g_signal_connect(dialog, "destroy", G_CALLBACK(destroy_cb), NULL);
   GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
   GtkWidget *grid = gtk_grid_new();
   gtk_grid_set_column_spacing(GTK_GRID(grid), 5);
@@ -1014,31 +1005,11 @@ void ps_menu(GtkWidget *parent) {
   my_combo_attach(GTK_GRID(grid), ps_ant_combo, col, row, 1, 1);
   g_signal_connect(ps_ant_combo, "changed", G_CALLBACK(ps_ant_cb), NULL);
   col++;
-#ifdef WDSP1
-  GtkWidget *map_b = gtk_check_button_new_with_label("PS MAP");
-  gtk_widget_set_name(map_b, "boldlabel");
-  gtk_widget_set_tooltip_text(map_b, "Enable adaptive PureSignal sample mapping for heavily compressed amplifiers.\n"
-                                     "Correction may be less stable if active. First try with OFF.");
-  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(map_b), transmitter->ps_map);
-  gtk_grid_attach(GTK_GRID(grid), map_b, col, row, 1, 1);
-  g_signal_connect(map_b, "toggled", G_CALLBACK(map_cb), NULL);
-  col++;
-  GtkWidget *tol_b = gtk_check_button_new_with_label("PS Relax Tolerance");
-  gtk_widget_set_name(tol_b, "boldlabel");
-  gtk_widget_set_tooltip_text(tol_b, "Relax PureSignal calibration tolerance for difficult amplifiers.\n"
-                                     "May help when calibration is rejected or unstable.");
-  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(tol_b), transmitter->ps_ptol);
-  gtk_grid_attach(GTK_GRID(grid), tol_b, col, row, 2, 1);
-  g_signal_connect(tol_b, "toggled", G_CALLBACK(tol_cb), NULL);
-  col++;
-  col++;
-#endif
   GtkWidget *oneshot_b = gtk_check_button_new_with_label("OneShot");
   gtk_widget_set_name(oneshot_b, "boldlabel");
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(oneshot_b), transmitter->ps_oneshot);
   gtk_grid_attach(GTK_GRID(grid), oneshot_b, col, row, 1, 1);
   g_signal_connect(oneshot_b, "toggled", G_CALLBACK(oneshot_cb), NULL);
-#ifndef WDSP1
   col++;
   GtkWidget *tolerance_label = gtk_label_new("PS Stability:");
   gtk_widget_set_name(tolerance_label, "boldlabel");
@@ -1057,7 +1028,6 @@ void ps_menu(GtkWidget *parent) {
   gtk_combo_box_set_active(GTK_COMBO_BOX(tolerance_combo), transmitter->ps_tolerance_mode);
   my_combo_attach(GTK_GRID(grid), tolerance_combo, col, row, 1, 1);
   g_signal_connect(tolerance_combo, "changed", G_CALLBACK(tolerance_mode_cb), NULL);
-#endif
   row++;
   col = 0;
   feedback_l = gtk_label_new("Feedback Lvl");

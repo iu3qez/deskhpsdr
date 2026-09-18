@@ -642,6 +642,18 @@ static void aprof_nosave_btn_clicked(GtkWidget *widget, gpointer data) {
   gtk_widget_destroy(GTK_WIDGET(data));    // Schließt nur das Fenster, ohne das Programm zu beenden
 }
 
+static gboolean aprof_delete_event_cb(GtkWidget *widget, GdkEvent *event, gpointer data) {
+  (void)event;
+  (void)data;
+  gtk_widget_destroy(widget);
+  return TRUE;
+}
+
+static void aprof_destroy_cb(GtkWidget *widget, gpointer data) {
+  (void)widget;
+  (void)data;
+}
+
 // Funktion, die auf die Enter-Taste reagiert
 gboolean aprof_enter_key_press(GtkWidget *widget, GdkEventKey *event, gpointer data) {
   if (event->keyval == GDK_KEY_Return) {
@@ -668,8 +680,8 @@ void showAudioProfileSaveDialog(void) {
   snprintf(_title, 64, "%s", PGNAME);
   gtk_window_set_title(GTK_WINDOW(aprof_dialog_win), _title);
   gtk_window_set_default_size(GTK_WINDOW(aprof_dialog_win), window_width, window_height);
-  g_signal_connect(aprof_dialog_win, "destroy", G_CALLBACK(aprof_nosave_btn_clicked), aprof_dialog_win);
-  g_signal_connect(aprof_dialog_win, "delete_event", G_CALLBACK(aprof_nosave_btn_clicked), aprof_dialog_win);
+  g_signal_connect(aprof_dialog_win, "delete_event", G_CALLBACK(aprof_delete_event_cb), NULL);
+  g_signal_connect(aprof_dialog_win, "destroy", G_CALLBACK(aprof_destroy_cb), NULL);
   // Entferne die Fensterdekorationen (Schließen-Button, etc.)
   gtk_window_set_decorated(GTK_WINDOW(aprof_dialog_win), FALSE);
   // Berechne die mittige Position auf dem Bildschirm
@@ -737,7 +749,7 @@ static void cleanup(void) {
     gtk_widget_destroy(tmp);
     sub_menu = NULL;
     active_menu  = NO_MENU;
-    radio_save_state();
+    // radio_save_state();
     int _mode = vfo_get_tx_mode();
     if (_mode < 3 && can_transmit) {
       //  char fn[64];
@@ -750,6 +762,14 @@ static void cleanup(void) {
 static gboolean close_cb(void) {
   cleanup();
   return TRUE;
+}
+
+static void destroy_cb(GtkWidget *widget, gpointer data) {
+  (void)widget;
+  (void)data;
+  dialog = NULL;
+  sub_menu = NULL;
+  active_menu = NO_MENU;
 }
 
 static void tx_panadapter_peaks_in_passband_filled_cb(GtkWidget *widget, gpointer data) {
@@ -1270,7 +1290,7 @@ void tx_menu(GtkWidget *parent) {
   GtkWidget *combo;
   dialog = gtk_dialog_new();
   gtk_window_set_transient_for(GTK_WINDOW(dialog), GTK_WINDOW(parent));
-  gtk_window_set_default_size(GTK_WINDOW(dialog), 580, 600); // set window size (can expand)
+  gtk_window_set_default_size(GTK_WINDOW(dialog), 580, 550); // set window size (can expand)
   gtk_window_set_position(GTK_WINDOW(dialog), GTK_WIN_POS_CENTER_ON_PARENT);
   win_set_bgcolor(dialog, &mwin_bgcolor);
   headerbar = gtk_header_bar_new();
@@ -1287,7 +1307,7 @@ void tx_menu(GtkWidget *parent) {
   }
   gtk_header_bar_set_title(GTK_HEADER_BAR(headerbar), m_name);
   g_signal_connect(dialog, "delete_event", G_CALLBACK(close_cb), NULL);
-  g_signal_connect(dialog, "destroy", G_CALLBACK(close_cb), NULL);
+  g_signal_connect(dialog, "destroy", G_CALLBACK(destroy_cb), NULL);
   GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
   GtkWidget *grid = gtk_grid_new();
   gtk_grid_set_column_spacing(GTK_GRID(grid), 5);
@@ -1298,7 +1318,7 @@ void tx_menu(GtkWidget *parent) {
   int col = 0;
   btn = gtk_button_new_with_label("Close");
   gtk_widget_set_name(btn, "close_button");
-  g_signal_connect(btn, "button-press-event", G_CALLBACK(close_cb), NULL);
+  g_signal_connect(btn, "clicked", G_CALLBACK(close_cb), NULL);
   gtk_grid_attach(GTK_GRID(grid), btn, col, row, 1, 1);
   //
   // Must init the containers here since setting the buttons emits
@@ -1358,6 +1378,11 @@ void tx_menu(GtkWidget *parent) {
     col += 3;
     load_button = gtk_button_new_with_label("Activate");
     gtk_widget_set_name(load_button, "boldlabel_blue");
+    gtk_widget_set_tooltip_text(load_button,
+                                "Load and activate the selected Audio_Profile,\n"
+                                "which contain the WDSP RX and TX audio chain.\n\n"
+                                "Do not confuse:\n"
+                                "This button don't load the whole SDR device config !");
     gtk_grid_attach(GTK_GRID(tx_grid), load_button, col, row, 1, 1);
     g_signal_connect(load_button, "clicked", G_CALLBACK(load_button_clicked_cb), load_button);
     if (!check_file(mic_prof.nr)) {
@@ -1368,6 +1393,11 @@ void tx_menu(GtkWidget *parent) {
     col++;
     save_button = gtk_button_new_with_label("Save");
     gtk_widget_set_name(save_button, "boldlabel_blue");
+    gtk_widget_set_tooltip_text(save_button,
+                                "Save the selected Audio_Profile,\n"
+                                "which contain the WDSP RX and TX audio chain.\n\n"
+                                "Do not confuse:\n"
+                                "This button don't save the whole SDR device config !");
     gtk_grid_attach(GTK_GRID(tx_grid), save_button, col, row, 1, 1);
     g_signal_connect(save_button, "clicked", G_CALLBACK(save_button_clicked_cb), save_button);
     col = 0;
@@ -1394,12 +1424,16 @@ void tx_menu(GtkWidget *parent) {
     col += 3;
     GtkWidget *loadfile_btn = gtk_button_new_with_label("Import file");
     gtk_widget_set_name(loadfile_btn, "boldlabel_blue");
+    gtk_widget_set_tooltip_text(loadfile_btn,
+                                "Load an exported Audio_Profile file");
     gtk_grid_attach(GTK_GRID(tx_grid), loadfile_btn, col, row, 1, 1);
     g_signal_connect(loadfile_btn, "clicked", G_CALLBACK(audio_profile_load_cb),
                      dialog);   // <-- wichtig: TX-Menu-Dialog als Parent
     col++;
     GtkWidget *savefile_btn = gtk_button_new_with_label("Export file");
     gtk_widget_set_name(savefile_btn, "boldlabel_blue");
+    gtk_widget_set_tooltip_text(savefile_btn,
+                                "Export the current Audio_Profile into an export file for transport.");
     gtk_grid_attach(GTK_GRID(tx_grid), savefile_btn, col, row, 1, 1);
     g_signal_connect(savefile_btn, "clicked", G_CALLBACK(audio_profile_save_cb),
                      dialog);
@@ -1907,6 +1941,7 @@ void tx_menu(GtkWidget *parent) {
   gtk_widget_set_halign(label, GTK_ALIGN_END);
   gtk_grid_attach(GTK_GRID(cfc_grid), label, 2, row, 1, 1);
   btn = gtk_spin_button_new_with_range(0.0, 20.0, 1.0);
+  gtk_style_context_add_class(gtk_widget_get_style_context(btn), "cfc-spin");
   gtk_entry_set_width_chars(GTK_ENTRY(btn), 3);
   gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->cfc_lvl[0]);
   gtk_grid_attach(GTK_GRID(cfc_grid), btn, 3, row, 1, 1);
@@ -1916,6 +1951,7 @@ void tx_menu(GtkWidget *parent) {
   gtk_widget_set_halign(label, GTK_ALIGN_END);
   gtk_grid_attach(GTK_GRID(cfc_grid), label, 4, row, 1, 1);
   btn = gtk_spin_button_new_with_range(-20.0, 20.0, 1.0);
+  gtk_style_context_add_class(gtk_widget_get_style_context(btn), "cfc-spin");
   gtk_entry_set_width_chars(GTK_ENTRY(btn), 3);
   gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->cfc_post[0]);
   gtk_grid_attach(GTK_GRID(cfc_grid), btn, 5, row, 1, 1);
@@ -1925,6 +1961,7 @@ void tx_menu(GtkWidget *parent) {
   gtk_widget_set_size_request(line, -1, 3);
   gtk_grid_attach(GTK_GRID(cfc_grid), line, 0, row, 6, 1);
   row++;
+  /*
   char cfc_label_txt[256];
   snprintf(cfc_label_txt, sizeof(cfc_label_txt),
            "CFC: Multiband Compressor, not an EQ.\n"
@@ -1933,6 +1970,7 @@ void tx_menu(GtkWidget *parent) {
   gtk_widget_set_name(cfc_label, "smalllabel_blue_bold");
   gtk_grid_attach(GTK_GRID(cfc_grid), cfc_label, 0, row, 6, 1);
   row++;
+  */
   GtkWidget *cfc_graph = cfc_graph_create(transmitter);
   gtk_grid_attach(GTK_GRID(cfc_grid), cfc_graph, 0, row, 6, 1);
   // Frequency, Level, Post-Gain
@@ -1979,6 +2017,7 @@ void tx_menu(GtkWidget *parent) {
     cfc_point_row++;
     //------------------------------------------------------------------------------------------------------------------
     btn = gtk_spin_button_new_with_range(10.0, 16000.0, 10.0);
+    gtk_style_context_add_class(gtk_widget_get_style_context(btn), "cfc-spin");
     gtk_entry_set_width_chars(GTK_ENTRY(btn), 5);
     gtk_widget_set_hexpand(btn, FALSE);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->cfc_freq[i]);
@@ -1987,6 +2026,7 @@ void tx_menu(GtkWidget *parent) {
     cfc_graph_bind_control(i, btn, NULL, NULL);
     //------------------------------------------------------------------------------------------------------------------
     btn = gtk_spin_button_new_with_range(10.0, 16000.0, 10.0);
+    gtk_style_context_add_class(gtk_widget_get_style_context(btn), "cfc-spin");
     gtk_entry_set_width_chars(GTK_ENTRY(btn), 5);
     gtk_widget_set_hexpand(btn, FALSE);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->cfc_freq[i + max_cfc_zeilen]);
@@ -1995,6 +2035,7 @@ void tx_menu(GtkWidget *parent) {
     cfc_graph_bind_control(i + max_cfc_zeilen, btn, NULL, NULL);
     //------------------------------------------------------------------------------------------------------------------
     btn = gtk_spin_button_new_with_range(0.0, 20.0, 1.0);
+    gtk_style_context_add_class(gtk_widget_get_style_context(btn), "cfc-spin");
     gtk_entry_set_width_chars(GTK_ENTRY(btn), 3);
     gtk_widget_set_hexpand(btn, FALSE);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->cfc_lvl[i]);
@@ -2003,6 +2044,7 @@ void tx_menu(GtkWidget *parent) {
     cfc_graph_bind_control(i, NULL, btn, NULL);
     //------------------------------------------------------------------------------------------------------------------
     btn = gtk_spin_button_new_with_range(0.0, 20.0, 1.0);
+    gtk_style_context_add_class(gtk_widget_get_style_context(btn), "cfc-spin");
     gtk_entry_set_width_chars(GTK_ENTRY(btn), 3);
     gtk_widget_set_hexpand(btn, FALSE);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->cfc_lvl[i + max_cfc_zeilen]);
@@ -2011,6 +2053,7 @@ void tx_menu(GtkWidget *parent) {
     cfc_graph_bind_control(i + max_cfc_zeilen, NULL, btn, NULL);
     //------------------------------------------------------------------------------------------------------------------
     btn = gtk_spin_button_new_with_range(-20.0, 20.0, 1.0);
+    gtk_style_context_add_class(gtk_widget_get_style_context(btn), "cfc-spin");
     gtk_entry_set_width_chars(GTK_ENTRY(btn), 3);
     gtk_widget_set_hexpand(btn, FALSE);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->cfc_post[i]);
@@ -2019,6 +2062,7 @@ void tx_menu(GtkWidget *parent) {
     cfc_graph_bind_control(i, NULL, NULL, btn);
     //------------------------------------------------------------------------------------------------------------------
     btn = gtk_spin_button_new_with_range(-20.0, 20.0, 1.0);
+    gtk_style_context_add_class(gtk_widget_get_style_context(btn), "cfc-spin");
     gtk_entry_set_width_chars(GTK_ENTRY(btn), 3);
     gtk_widget_set_hexpand(btn, FALSE);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(btn), transmitter->cfc_post[i + max_cfc_zeilen]);

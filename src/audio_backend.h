@@ -1,0 +1,44 @@
+/* Copyright (C)
+* 2024-2026 - Heiko Amft, DL1BZ (Project deskHPSDR)
+*
+* SPDX-License-Identifier: GPL-3.0-or-later
+*
+*   This program is free software: you can redistribute it and/or modify
+*   it under the terms of the GNU General Public License as published by
+*   the Free Software Foundation, either version 3 of the License, or
+*   (at your option) any later version.
+*
+*   This program is distributed in the hope that it will be useful,
+*   but WITHOUT ANY WARRANTY; without even the implied warranty of
+*   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+*   GNU General Public License for more details.
+*
+*   You should have received a copy of the GNU General Public License
+*   along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
+
+#ifndef _AUDIO_BACKEND_H
+#define _AUDIO_BACKEND_H
+
+#include "receiver.h"
+
+extern void *audio_backend_output_open(RECEIVER *rx, const char *device_name, int *channels);
+extern void audio_backend_output_close(void *handle);
+
+extern void *audio_backend_input_open(const char *device_name);
+extern void audio_backend_input_close(void *handle);
+
+extern void *audio_backend_tci_monitor_open(const char *device_name, int *channels);
+extern void audio_backend_tci_monitor_close(void *handle);
+
+extern int audio_backend_output_is_alive(void *handle);
+extern int audio_backend_input_is_alive(void *handle);
+extern int audio_backend_tci_monitor_is_alive(void *handle);
+
+extern int audio_backend_get_cards(void);
+
+#if defined(MINIAUDIO) && defined(__linux__)
+  extern char miniaudio_backend[16];
+#endif
+
+#endif

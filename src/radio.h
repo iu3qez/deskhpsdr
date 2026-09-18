@@ -181,10 +181,10 @@ extern const int pa_power_list[];
 extern int display_zoompan;
 extern int display_sliders;
 
-#ifdef __APPLE__
+#ifdef AUDIO_RINGBUFFER
   extern int rx_audio_network_reserve_enabled;
   extern int rx_audio_network_reserve_ms;
-  extern int coreaudio_rx_latency_correction_enabled;
+  extern int audio_rx_latency_correction_enabled;
 #endif
 extern int display_extra_sliders;
 extern int display_toolbar;
@@ -302,8 +302,10 @@ extern _Atomic int tune;
 extern int memory_tune;
 extern int full_tune;
 
-extern int adc0_overload;
-extern int adc1_overload;
+extern int adc0_p_ovl;  /* Protocol/FPGA reported ADC0 overload */
+extern int adc1_p_ovl;  /* Protocol/FPGA reported ADC1 overload */
+extern int adc0_fs_ovl; /* Full-scale detected from ADC0 I/Q samples */
+extern int adc1_fs_ovl; /* Full-scale detected from ADC1 I/Q samples */
 extern int tx_fifo_underrun;
 extern int tx_fifo_overrun;
 extern int high_swr_seen;

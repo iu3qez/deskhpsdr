@@ -594,12 +594,12 @@ static void *autogain_thread_function(void *arg) {
               (int) elapsed_time);
     }
     if (!radio_is_transmitting() && !radio_ptt) {
-      if (adc0_overload) {
+      if (adc0_p_ovl) {
         adc0_error_count++;   // if ADC0 OVL increase counter
       } else {
         adc0_error_count = 0; // reset counter
       }
-      if (adc1_overload) {
+      if (adc1_p_ovl) {
         adc1_error_count++;   // if ADC1 OVL increase counter
       } else {
         adc1_error_count = 0; // reset counter
@@ -615,7 +615,7 @@ static void *autogain_thread_function(void *arg) {
         autogain_is_adjusted = 0;
         pthread_mutex_unlock(&autogain_mutex);
         g_idle_add(ext_vfo_update, NULL);
-        while (!radio_is_transmitting() && !radio_ptt && adc0_overload && gain > min_gain) {
+        while (!radio_is_transmitting() && !radio_ptt && adc0_p_ovl && gain > min_gain) {
           gain -= gain_step; // decrease gain with gain_step
           if (gain < min_gain) {
             gain = min_gain;  // Sicherstellen, dass GAIN nicht kleiner MIN_GAIN
@@ -628,7 +628,7 @@ static void *autogain_thread_function(void *arg) {
         t_print("%s: RxPGA[RX%d] re-adjusted, new RxPGA gain is %+ddb\n", __func__, active_receiver->id, (int) gain);
       }
       if (!radio_is_transmitting() && !radio_ptt && adc1_error_count >= adc_count_limit && !autogain_first_run) {
-        while (!radio_is_transmitting() && !radio_ptt && adc1_overload && gain > min_gain) {
+        while (!radio_is_transmitting() && !radio_ptt && adc1_p_ovl && gain > min_gain) {
           gain -= gain_step; // decrease gain with gain_step
           if (gain < min_gain) {
             gain = min_gain;  // Sicherstellen, dass GAIN nicht kleiner MIN_GAIN
@@ -639,8 +639,8 @@ static void *autogain_thread_function(void *arg) {
           g_usleep(500000);  // wait 0.5s
         }
       }
-      if (!radio_is_transmitting() && !radio_ptt && !adc0_overload && !autogain_is_adjusted && !autogain_first_run) {
-        while (!radio_is_transmitting() && !radio_ptt && !adc0_overload && gain >= min_gain && gain < max_gain) {
+      if (!radio_is_transmitting() && !radio_ptt && !adc0_p_ovl && !autogain_is_adjusted && !autogain_first_run) {
+        while (!radio_is_transmitting() && !radio_ptt && !adc0_p_ovl && gain >= min_gain && gain < max_gain) {
           gain += 1.0;                                  // increase gain +1db
           pthread_mutex_lock(&autogain_mutex);
           set_rf_gain(active_receiver->id, gain);       // set gain
@@ -5578,13 +5578,13 @@ int parse_cmd(void *data) {
       //NOTE      y : 0-255 mapped to 0-100
       //ENDDEF
       if (command[3] == ';') {
-        int id = atoi(&command[2]);
+        int id = SET(command[2] == '1');
         RXCHECK(id,
                 snprintf(reply, 256, "SQ%d%03d;", id, (int)((double) receiver[id]->squelch / 100.0 * 255.0 + 0.5));
                 send_resp(client->fd, reply);
                )
       } else if (command[6] == ';') {
-        int id = atoi(&command[2]);
+        int id = SET(command[2] == '1');
         int p2 = atoi(&command[3]);
         RXCHECK(id,
                 receiver[id]->squelch = (int)((double) p2 / 255.0 * 100.0 + 0.5);
