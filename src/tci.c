@@ -38,6 +38,11 @@
 
 #ifdef __APPLE__
   #include <time.h>
+  #include <errno.h>
+  #include <string.h>
+  #include <sys/socket.h>
+  #include <netinet/in.h>
+  #include <netinet/tcp.h>
 #endif
 
 #include <libwebsockets.h>
@@ -71,6 +76,18 @@
 #define MAXMSGSIZE      512
 #define TCI_MAX_ARGS 16
 #define TCI_BINARY_REASSEMBLY_MAX 65536
+
+//
+// TCP keepalive for TCI connections: first probe after TCI_LWS_KA_TIME s
+// without traffic, then TCI_LWS_KA_PROBES probes TCI_LWS_KA_INTERVAL s apart.
+// Their total, TCI_LWS_DEAD_PEER_S (60 s), is also the limit for data the peer
+// does not acknowledge. See tci_lws_server() for why these replace the
+// libwebsockets validity PINGs.
+//
+#define TCI_LWS_KA_TIME     30
+#define TCI_LWS_KA_INTERVAL 10
+#define TCI_LWS_KA_PROBES    3
+#define TCI_LWS_DEAD_PEER_S (TCI_LWS_KA_TIME + TCI_LWS_KA_INTERVAL * TCI_LWS_KA_PROBES)
 
 #ifndef LWS_PROTOCOL_LIST_TERM
   #define LWS_PROTOCOL_LIST_TERM { NULL, NULL, 0, 0, 0, NULL, 0 }
@@ -7546,6 +7563,78 @@ static int tci_lws_write_queued(CLIENT *client) {
   return 0;
 }
 
+#ifdef __APPLE__
+//
+// libwebsockets sets the ka_* keepalive times per socket only outside Apple
+// platforms. Here it turns on SO_KEEPALIVE and leaves the timing to the kernel
+// defaults (net.inet.tcp.keepidle = 7200 s), and it has no TCP_USER_TIMEOUT.
+// Set the same limits on the socket ourselves. Keepalive probes go out only on
+// an idle connection. While TCI streams to a client, a dead peer shows up as
+// unacknowledged data instead, and TCP_RXT_CONNDROPTIME drops the connection
+// at the first retransmission timeout after TCI_LWS_DEAD_PEER_S seconds of
+// retransmitting.
+//
+static void tci_lws_set_tcp_timeouts(const CLIENT *client, struct lws *wsi) {
+  static const int opts[][2] = {
+    { TCP_KEEPALIVE,        TCI_LWS_KA_TIME },
+    { TCP_KEEPINTVL,        TCI_LWS_KA_INTERVAL },
+    { TCP_KEEPCNT,          TCI_LWS_KA_PROBES },
+    { TCP_RXT_CONNDROPTIME, TCI_LWS_DEAD_PEER_S },
+  };
+  int fd = lws_get_socket_fd(wsi);
+  if (fd < 0) { return; }
+  for (size_t i = 0; i < G_N_ELEMENTS(opts); i++) {
+    if (setsockopt(fd, IPPROTO_TCP, opts[i][0], &opts[i][1], sizeof(opts[i][1])) < 0) {
+      t_print("TCI%d: setsockopt(IPPROTO_TCP, 0x%x, %d) failed: %s\n",
+              client->seq, opts[i][0], opts[i][1], strerror(errno));
+    }
+  }
+  if (rigctl_debug) {
+    int keepalive = -1;
+    int v[G_N_ELEMENTS(opts)];
+    socklen_t l = sizeof(keepalive);
+    if (getsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &keepalive, &l) < 0) { keepalive = -1; }
+    for (size_t i = 0; i < G_N_ELEMENTS(opts); i++) {
+      l = sizeof(v[i]);
+      if (getsockopt(fd, IPPROTO_TCP, opts[i][0], &v[i], &l) < 0) { v[i] = -1; }
+    }
+    t_print("TCI%d TCP SO_KEEPALIVE=%d idle=%d s interval=%d s probes=%d retransmit drop=%d s\n",
+            client->seq, keepalive, v[0], v[1], v[2], v[3]);
+  }
+}
+#endif
+
+//
+// libwebsockets log lines go to deskhpsdr.log through t_print(), next to the
+// LWS HANDSHAKE and LWS CLOSED lines. The lws default writer is stderr, which
+// is fully buffered once startup.c has reopened it on deskhpsdr.err, so a line
+// written there appears only when the buffer fills or deskHPSDR exits.
+// t_print() adds its own timestamp: skip the "[date time] " that lws puts in
+// front of the level letter.
+//
+static void tci_lws_log_emit(int level, const char *line) {
+  const char *p = line;
+  if (*p == '[') {
+    const char *q = strstr(p, "] ");
+    if (q != NULL) { p = q + 2; }
+  }
+  t_print("LWS %s", p);
+}
+
+//
+// With rigctl debug on, libwebsockets also logs its warnings and notices, so
+// that a connection it closes by itself names the reason in deskhpsdr.log.
+// Called from the TCI service thread, which is the only caller of lws.
+//
+static void tci_lws_update_log_level(void) {
+  static int level = -1;
+  int wanted = rigctl_debug ? (LLL_ERR | LLL_WARN | LLL_NOTICE) : LLL_ERR;
+  if (wanted != level) {
+    lws_set_log_level(wanted, tci_lws_log_emit);
+    level = wanted;
+  }
+}
+
 static int tci_lws_callback(struct lws *wsi, enum lws_callback_reasons reason,
                             void *user, void *in, size_t len) {
   CLIENT *client = (CLIENT *) user;
@@ -7583,6 +7672,9 @@ static int tci_lws_callback(struct lws *wsi, enum lws_callback_reasons reason,
     }
     tci_init_client(client, lws_get_socket_fd(wsi), ++tci_lws_seq);
     client->wsi = wsi;
+#ifdef __APPLE__
+    tci_lws_set_tcp_timeouts(client, wsi);
+#endif
     client->lws_tx_queue = g_queue_new();
     client->device_index = active_device_index;
     client->device = &discovered[client->device_index];
@@ -7755,13 +7847,33 @@ static gpointer tci_lws_server(gpointer data) {
   static int first = 1;
   struct lws_context_creation_info info;
   int port = GPOINTER_TO_INT(data);
-  lws_set_log_level(LLL_ERR, NULL);
+  //
+  // No WebSocket validity PINGs. The libwebsockets default sends a PING after
+  // 40 s without a PONG and closes the connection 10 s later, with no close
+  // frame. With permessage-deflate, a PING issued while a compressed message
+  // is still going out in fragments is written as the next continuation
+  // fragment of that message: its 8 bytes reach the client inside the binary
+  // message, no PONG comes back, and the client is dropped (issue #33).
+  // secs_since_valid_hangup = 0 keeps libwebsockets from arming the validity
+  // timer at all. Dead peers are detected by TCP instead: ka_* below, which
+  // libwebsockets applies per socket on Linux (with TCP_USER_TIMEOUT), and
+  // tci_lws_set_tcp_timeouts() on macOS.
+  //
+  static const lws_retry_bo_t tci_lws_retry = {
+    .secs_since_valid_ping   = 0,
+    .secs_since_valid_hangup = 0,
+  };
+  tci_lws_update_log_level();
   memset(&info, 0, sizeof(info));
   signal(SIGPIPE, SIG_IGN);
   info.port = port;
   info.protocols = tci_lws_protocols;
   info.gid = -1;
   info.uid = -1;
+  info.retry_and_idle_policy = &tci_lws_retry;
+  info.ka_time = TCI_LWS_KA_TIME;
+  info.ka_interval = TCI_LWS_KA_INTERVAL;
+  info.ka_probes = TCI_LWS_KA_PROBES;
 #if !defined(LWS_WITHOUT_EXTENSIONS)
   //
   // permessage-deflate (RFC7692) is offered to every client, but only the
@@ -7808,6 +7920,7 @@ static gpointer tci_lws_server(gpointer data) {
   }
   while (tci_running) {
     int do_writable = 0;
+    tci_lws_update_log_level();
     tci_service_rx_audio();
     g_mutex_lock(&tci_mutex);
     if (tci_lws_pending_writable) {
