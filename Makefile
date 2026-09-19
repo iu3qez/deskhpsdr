@@ -499,7 +499,14 @@ LWS_LOCAL_COMPLETE := $(and $(wildcard $(LWS_LOCAL_BUILD)/include/libwebsockets.
 
 ifneq ($(LWS_LOCAL_COMPLETE),)
 $(info Local libwebsockets found, using static library.)
-LWS_CFLAGS := -I./$(LWS_LOCAL_BUILD)/include
+# LWS_LOCAL_CFLAGS goes at the front of INCLUDES, not in TCI_INCLUDE.
+# On macOS FFTW_CFLAGS can be -I$(BREW_INCDIR), which also holds Homebrew's
+# libwebsockets.h, and src/tci.o must be compiled against the header of the
+# library it is linked with (struct lws_context_creation_info differs).
+# src/tci.d does not record which header was chosen: after building or
+# removing the local tree, run "touch src/tci.c".
+LWS_LOCAL_CFLAGS := -I./$(LWS_LOCAL_BUILD)/include
+LWS_CFLAGS :=
 LWS_LIBS := ./$(LWS_LOCAL_LIB) -lz
 else
 ifeq ($(UNAME_S), Darwin)
@@ -522,7 +529,7 @@ endif
 
 TCI_SOURCES=src/tci.c src/tci_audio.c src/tci_spectrum.c
 TCI_OBJS=src/tci.o src/tci_audio.o src/tci_spectrum.o
-CPP_INCLUDE += `$(PKG_CONFIG) --cflags openssl` $(LWS_CFLAGS)
+CPP_INCLUDE += `$(PKG_CONFIG) --cflags openssl` $(LWS_LOCAL_CFLAGS) $(LWS_CFLAGS)
 CPP_SOURCES += src/tci.c src/tci_audio.c src/tci_spectrum.c
 
 ##############################################################################
@@ -618,7 +625,7 @@ OPTIONS=$(MIDI_OPTIONS) $(USBOZY_OPTIONS) \
 	-DGIT_BRANCH='"$(GIT_BRANCH)"' \
 	-DGIT_REMOTE='"$(GIT_REMOTE)"'
 
-INCLUDES=$(GTK_INCLUDE) $(WDSP_INCLUDE) $(SOLAR_INCLUDE) $(TELNET_INCLUDE) $(AUDIO_INCLUDE) $(STEMLAB_INCLUDE) $(TCI_INCLUDE) $(JSON_INCLUDE) $(MIDI_INCLUDE)
+INCLUDES=$(LWS_LOCAL_CFLAGS) $(GTK_INCLUDE) $(WDSP_INCLUDE) $(SOLAR_INCLUDE) $(TELNET_INCLUDE) $(AUDIO_INCLUDE) $(STEMLAB_INCLUDE) $(TCI_INCLUDE) $(JSON_INCLUDE) $(MIDI_INCLUDE)
 # Automatic header dependency tracking: each object also emits a .d file
 # listing the headers it was compiled against, which is included below.
 # -MP adds phony targets so a deleted header does not break the build.
