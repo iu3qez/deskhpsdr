@@ -360,6 +360,8 @@ static void *keyer_thread(void *arg) {
     if (enforce_cw_vox) { moxbefore = 0; }
     cwvox = 0; // if not using CW break-in this will stay at zero
     if (cw_breakin && (txmode == modeCWU || txmode == modeCWL)) {
+      struct timespec diag_t0, diag_t1;  // DIAG paddle-lag
+      clock_gettime(CLOCK_MONOTONIC, &diag_t0);
       g_idle_add(ext_mox_update, GINT_TO_POINTER(1));
       //
       // Wait for mox, that is, wait for WDSP shutting down the RX and
@@ -370,6 +372,10 @@ static void *keyer_thread(void *arg) {
       //
       i = 200;
       while ((!mox || cw_not_ready) && i-- > 0) { usleep(1000L); }
+      clock_gettime(CLOCK_MONOTONIC, &diag_t1);
+      t_print("%s: DIAG mox wait %ld ms moxbefore=%d mox=%d cw_not_ready=%d%s\n", __func__,
+              (long)((diag_t1.tv_sec - diag_t0.tv_sec) * 1000L + (diag_t1.tv_nsec - diag_t0.tv_nsec) / 1000000L),
+              moxbefore, (int) mox, cw_not_ready, i < 0 ? " TIMEOUT" : "");
       cwvox = (int) cw_keyer_hang_time;
     }
     key_state = CHECK;

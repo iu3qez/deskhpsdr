@@ -2002,6 +2002,9 @@ static void rxtx(int state) {
   pre_mox = state && !duplex;
   if (state) {
     // switch to tx
+    struct timespec diag_t0, diag_t1, diag_t2;  // DIAG paddle-lag
+    clock_gettime(CLOCK_MONOTONIC, &diag_t0);
+    diag_t1 = diag_t0;
     RECEIVER *rx_feedback = receiver[PS_RX_FEEDBACK];
     RECEIVER *tx_feedback = receiver[PS_TX_FEEDBACK];
     if (rx_feedback) { rx_feedback->samples = 0; }
@@ -2015,6 +2018,7 @@ static void rxtx(int state) {
       for (i = 0; i < receivers; i++) {
         rx_wait_off(receiver[i]);
       }
+      clock_gettime(CLOCK_MONOTONIC, &diag_t1);
       for (i = 0; i < receivers; i++) {
         receiver[i]->displaying = 0;
         rx_set_displaying(receiver[i]);
@@ -2042,6 +2046,11 @@ static void rxtx(int state) {
     tx_on(transmitter);
     transmitter->displaying = 1;
     tx_set_displaying(transmitter);
+    clock_gettime(CLOCK_MONOTONIC, &diag_t2);
+    t_print("%s: DIAG rx flush %ld ms, rxtx(1) total %ld ms, receivers=%d\n", __func__,
+            (long)((diag_t1.tv_sec - diag_t0.tv_sec) * 1000L + (diag_t1.tv_nsec - diag_t0.tv_nsec) / 1000000L),
+            (long)((diag_t2.tv_sec - diag_t0.tv_sec) * 1000L + (diag_t2.tv_nsec - diag_t0.tv_nsec) / 1000000L),
+            receivers);
 #ifdef DUMP_TX_DATA
     rxiq_count = 0;
 #endif
