@@ -1976,14 +1976,38 @@ void radio_change_sample_rate(int rate) {
   }
 }
 
-static void rxtx(int state) {
+//
+// The TX/RX switch has two halves.
+//
+// rxtx_rf() does the WDSP and protocol work. It contains no GTK call, so it
+// may run on a thread other than the GTK main loop.
+//
+// radio_tx_gui_sync() converges the user interface to the current transmit
+// state. It takes no argument: it compares gui_tx_shown with
+// radio_is_transmitting() and returns at once when they already match. A
+// TX and a RX update that queued up while the main loop was stalled therefore
+// collapse into a single no-op instead of replaying a stale panel move, which
+// would double-parent a panel or remove one that is not there.
+//
+// Because the converger reads the transmit state instead of taking it as an
+// argument, it must not run before the caller has assigned mox/vox/tune. That
+// is why rxtx() queues it rather than calling it directly.
+//
+static int gui_tx_shown = 0;
+
+static void rxtx_rf(int state) {
   int i;
   if (!can_transmit) {
-    t_print("WARNING: rxtx called but no transmitter!");
+    t_print("WARNING: rxtx_rf called but no transmitter!");
     return;
   }
   //
-  // Abort any running Capture, Transmit, Replay
+  // Abort any running Capture, Transmit, Replay.
+  //
+  // This is a one-shot side effect of the transition, not interface state, so
+  // it cannot move into the converger: a short CW element collapses the TX/RX
+  // pair there and the abort would never run. schedule_action() queues its own
+  // work onto the main loop, so it is safe from any thread.
   //
   switch (capture_state) {
   case CAP_RECORDING:
@@ -2019,36 +2043,13 @@ static void rxtx(int state) {
         rx_wait_off(receiver[i]);
       }
       clock_gettime(CLOCK_MONOTONIC, &diag_t1);
-      for (i = 0; i < receivers; i++) {
-        receiver[i]->displaying = 0;
-        rx_set_displaying(receiver[i]);
-        g_object_ref((gpointer) receiver[i]->panel);
-        if (receiver[i]->panadapter != NULL) {
-          g_object_ref((gpointer) receiver[i]->panadapter);
-        }
-        if (receiver[i]->waterfall != NULL) {
-          g_object_ref((gpointer) receiver[i]->waterfall);
-        }
-        gtk_container_remove(GTK_CONTAINER(fixed), receiver[i]->panel);
-      }
-    }
-    if (transmitter->dialog) {
-      gtk_widget_show_all(transmitter->dialog);
-      if (transmitter->dialog_x != -1 && transmitter->dialog_y != -1) {
-        gtk_window_move(GTK_WINDOW(transmitter->dialog), transmitter->dialog_x, transmitter->dialog_y);
-      }
-    } else {
-      gtk_fixed_put(GTK_FIXED(fixed), transmitter->panel, transmitter->x, transmitter->y);
     }
     if (transmitter->puresignal) {
       tx_ps_mox(transmitter, 1);
     }
     tx_on(transmitter);
-    tx_levels_show(transmitter);
-    transmitter->displaying = 1;
-    tx_set_displaying(transmitter);
     clock_gettime(CLOCK_MONOTONIC, &diag_t2);
-    t_print("%s: DIAG rx flush %ld ms, rxtx(1) total %ld ms, receivers=%d\n", __func__,
+    t_print("%s: DIAG rx flush %ld ms, rxtx_rf(1) total %ld ms, receivers=%d\n", __func__,
             (long)((diag_t1.tv_sec - diag_t0.tv_sec) * 1000L + (diag_t1.tv_nsec - diag_t0.tv_nsec) / 1000000L),
             (long)((diag_t2.tv_sec - diag_t0.tv_sec) * 1000L + (diag_t2.tv_nsec - diag_t0.tv_nsec) / 1000000L),
             receivers);
@@ -2074,15 +2075,6 @@ static void rxtx(int state) {
       tx_ps_mox(transmitter, 0);
     }
     tx_off(transmitter);
-    tx_levels_hide(transmitter);
-    transmitter->displaying = 0;
-    tx_set_displaying(transmitter);
-    if (transmitter->dialog) {
-      gtk_window_get_position(GTK_WINDOW(transmitter->dialog), &transmitter->dialog_x, &transmitter->dialog_y);
-      gtk_widget_hide(transmitter->dialog);
-    } else {
-      gtk_container_remove(GTK_CONTAINER(fixed), transmitter->panel);
-    }
     if (!duplex) {
       //
       // Set parameters for the "silence first RXIQ samples after TX/RX transition" feature
@@ -2119,13 +2111,10 @@ static void rxtx(int state) {
         if (tune) { do_silence = 5; } // 31 ms "silence" for TUNEing in any mode
       }
       for (i = 0; i < receivers; i++) {
-        gtk_fixed_put(GTK_FIXED(fixed), receiver[i]->panel, receiver[i]->x, receiver[i]->y);
 #ifdef AUDIO_RINGBUFFER
         audio_reprime_output(receiver[i]);
 #endif
         rx_on(receiver[i]);
-        receiver[i]->displaying = 1;
-        rx_set_displaying(receiver[i]);
         //
         // There might be some left-over samples in the RX buffer that were filled in
         // *before* going TX, delete them
@@ -2140,6 +2129,84 @@ static void rxtx(int state) {
       }
     }
   }
+}
+
+static gboolean radio_tx_gui_sync(gpointer data) {
+  int i;
+  int shown;
+  (void) data;
+  if (!can_transmit) { return G_SOURCE_REMOVE; }
+  shown = radio_is_transmitting() ? 1 : 0;
+  if (shown == gui_tx_shown) { return G_SOURCE_REMOVE; }
+  if (shown) {
+    if (!duplex) {
+      for (i = 0; i < receivers; i++) {
+        receiver[i]->displaying = 0;
+        rx_set_displaying(receiver[i]);
+        g_object_ref((gpointer) receiver[i]->panel);
+        if (receiver[i]->panadapter != NULL) {
+          g_object_ref((gpointer) receiver[i]->panadapter);
+        }
+        if (receiver[i]->waterfall != NULL) {
+          g_object_ref((gpointer) receiver[i]->waterfall);
+        }
+        gtk_container_remove(GTK_CONTAINER(fixed), receiver[i]->panel);
+      }
+    }
+    if (transmitter->dialog) {
+      gtk_widget_show_all(transmitter->dialog);
+      if (transmitter->dialog_x != -1 && transmitter->dialog_y != -1) {
+        gtk_window_move(GTK_WINDOW(transmitter->dialog), transmitter->dialog_x, transmitter->dialog_y);
+      }
+    } else {
+      gtk_fixed_put(GTK_FIXED(fixed), transmitter->panel, transmitter->x, transmitter->y);
+    }
+    tx_levels_show(transmitter);
+    transmitter->displaying = 1;
+    tx_set_displaying(transmitter);
+  } else {
+    tx_levels_hide(transmitter);
+    transmitter->displaying = 0;
+    tx_set_displaying(transmitter);
+    if (transmitter->dialog) {
+      gtk_window_get_position(GTK_WINDOW(transmitter->dialog), &transmitter->dialog_x, &transmitter->dialog_y);
+      gtk_widget_hide(transmitter->dialog);
+    } else {
+      gtk_container_remove(GTK_CONTAINER(fixed), transmitter->panel);
+    }
+    if (!duplex) {
+      for (i = 0; i < receivers; i++) {
+        gtk_fixed_put(GTK_FIXED(fixed), receiver[i]->panel, receiver[i]->x, receiver[i]->y);
+        receiver[i]->displaying = 1;
+        rx_set_displaying(receiver[i]);
+      }
+    }
+  }
+  gui_tx_shown = shown;
+  return G_SOURCE_REMOVE;
+}
+
+//
+// Notifications that are not interface convergence: they must run on every
+// state change, including the ones that perform no TX/RX transition at all
+// (MOX while VOX is pending, MOX OFF while already receiving), so they cannot
+// live in the converger, which returns early in exactly those cases.
+//
+static void radio_tx_notify(int state, int was_tune) {
+  update_slider_mic_gain_btn();
+  if (!tci_is_applying() && (!was_tune || state)) {
+    tci_mox_changed(state);
+  }
+}
+
+//
+// Main-loop convenience wrapper: every caller that already runs on the GTK
+// main loop uses this. The converger is queued, not called, because the
+// caller assigns mox/vox/tune only after this function returns.
+//
+static void rxtx(int state) {
+  rxtx_rf(state);
+  g_idle_add(radio_tx_gui_sync, NULL);
 }
 
 void radio_mox_update(int state) {
@@ -2206,10 +2273,7 @@ static void radio_set_mox_now(int state) {
   mox  = state;
   tune = 0;
   vox  = 0;
-  update_slider_mic_gain_btn();
-  if (!tci_is_applying() && (!was_tune || state)) {
-    tci_mox_changed(state);
-  }
+  radio_tx_notify(state, was_tune);
   switch (protocol) {
   case NEW_PROTOCOL:
     schedule_high_priority();
