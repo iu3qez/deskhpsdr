@@ -2044,6 +2044,7 @@ static void rxtx(int state) {
       tx_ps_mox(transmitter, 1);
     }
     tx_on(transmitter);
+    tx_levels_show(transmitter);
     transmitter->displaying = 1;
     tx_set_displaying(transmitter);
     clock_gettime(CLOCK_MONOTONIC, &diag_t2);
@@ -2073,6 +2074,7 @@ static void rxtx(int state) {
       tx_ps_mox(transmitter, 0);
     }
     tx_off(transmitter);
+    tx_levels_hide(transmitter);
     transmitter->displaying = 0;
     tx_set_displaying(transmitter);
     if (transmitter->dialog) {
