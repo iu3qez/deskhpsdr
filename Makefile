@@ -567,6 +567,79 @@ GTK_INCLUDE=`$(PKG_CONFIG) --cflags gtk+-3.0 glib-2.0 gio-2.0`
 GTK_LIBS=`$(PKG_CONFIG) --libs gtk+-3.0 glib-2.0 gio-2.0`
 endif
 
+#
+# Snapshot of the pkg-config GTK libraries, taken before GTK_BUNDLE can
+# replace them. Used by targets that build a binary outside the .app, which
+# cannot resolve @executable_path/../Frameworks.
+#
+GTK_LIBS_NATIVE := $(GTK_LIBS)
+
+##############################################################################
+#
+# Bundled GTK stack, macOS only
+#
+# GTK_BUNDLE points at a directory holding Frameworks/ and Resources/ taken
+# from a known good GTK stack. When it is set, deskhpsdr links against those
+# dylibs instead of Homebrew's, and install-Darwin copies them into the .app.
+# A later "brew upgrade" then cannot change the libraries the app runs on.
+# Leave it empty, the default, to build exactly as before.
+#
+# The dylibs must be linked, not linked against Homebrew and relinked after
+# the fact: dyld refuses a dylib whose compatibility version is lower than
+# the one recorded in the load command, and Homebrew glib 2.90 records 9001
+# where glib 2.88 provides 8801.
+#
+# Headers still come from Homebrew, so GTK_BUNDLE_GLIB_VERSION pins the glib
+# API level to what the bundled dylibs provide. A newer call is then a
+# deprecation warning at compile time instead of a dyld failure at launch.
+#
+# Seed the directory once with:
+#   make gtk-bundle-seed GTK_BUNDLE=macos-gtk-2.88 GTK_BUNDLE_FROM=/path/to/deskHPSDR.app
+#
+# A binary built this way only runs from inside the .app.
+#
+##############################################################################
+
+GTK_BUNDLE ?=
+GTK_BUNDLE_GLIB_VERSION ?= GLIB_VERSION_2_88
+
+ifneq ($(GTK_BUNDLE),)
+
+# The GTK dylibs deskhpsdr links directly. Their dependencies come along in
+# Frameworks/ and resolve through the @loader_path install names they
+# already carry, which for a dylib in Frameworks/ is Frameworks/ itself.
+GTK_BUNDLE_DYLIBS= \
+	libgtk-3.0.dylib \
+	libgdk-3.0.dylib \
+	libpangocairo-1.0.0.dylib \
+	libpango-1.0.0.dylib \
+	libpangoft2-1.0.0.dylib \
+	libharfbuzz.0.dylib \
+	libcairo-gobject.2.dylib \
+	libcairo.2.dylib \
+	libgdk_pixbuf-2.0.0.dylib \
+	libatk-1.0.0.dylib \
+	libgio-2.0.0.dylib \
+	libgobject-2.0.0.dylib \
+	libgmodule-2.0.0.dylib \
+	libglib-2.0.0.dylib \
+	libfribidi.0.dylib \
+	libepoxy.0.dylib
+
+GTK_LIBS= $(addprefix $(GTK_BUNDLE)/Frameworks/,$(GTK_BUNDLE_DYLIBS))
+
+BUNDLE_DEFINES= -DBUNDLED_APP \
+	-DGLIB_VERSION_MIN_REQUIRED=$(GTK_BUNDLE_GLIB_VERSION) \
+	-DGLIB_VERSION_MAX_ALLOWED=$(GTK_BUNDLE_GLIB_VERSION)
+
+# The build itself stays on CFLAGS' -Wno-deprecated-declarations, so the
+# GLIB_VERSION pin above raises nothing during a normal build: the tree
+# already has 29 ordinary GTK 3 deprecation warnings that would bury it.
+# "make gtk-bundle-check" arms the warning and reports only the pin.
+BUNDLE_OPTIONS= $(BUNDLE_DEFINES)
+
+endif
+
 CPP_INCLUDE += $(GTK_INCLUDE)
 
 ##############################################################################
@@ -609,6 +682,7 @@ endif
 ##############################################################################
 
 OPTIONS=$(MIDI_OPTIONS) $(USBOZY_OPTIONS) \
+	$(BUNDLE_OPTIONS) \
 	$(ANDROMEDA_OPTIONS) \
 	$(SATURN_OPTIONS) \
 	$(STEMLAB_OPTIONS) \
@@ -1034,6 +1108,7 @@ CPP_OPTIONS= --inline-suppr --enable=all --suppress=unmatchedSuppression
 
 ifeq ($(UNAME_S), Darwin)
 CPP_OPTIONS += -D__APPLE__
+CPP_OPTIONS += $(BUNDLE_DEFINES)
 CPP_OPTIONS += --check-level=exhaustive
 else
 CPP_OPTIONS += -D__linux__
@@ -1067,7 +1142,7 @@ tci-spectrum-test:
 
 .PHONY:	property-test
 property-test:
-	$(CC) -std=gnu11 -Wall -Wextra -I./src $(GTK_INCLUDE) -o property_test tests/property_test.c src/property.c $(GTK_LIBS)
+	$(CC) -std=gnu11 -Wall -Wextra -I./src $(GTK_INCLUDE) -o property_test tests/property_test.c src/property.c $(GTK_LIBS_NATIVE)
 	./property_test
 	@rm -f property_test
 
@@ -1192,6 +1267,63 @@ prepare: .WDSP_libs_updated_V3
 	@echo "==> Update WDSP requirements missing → running update_libs.sh"
 	@./update_libs.sh
 
+##############################################################################
+#
+# Report any use of glib API newer than the bundled dylibs provide. Compiles
+# every source with the GLIB_VERSION pin and -Wdeprecated-declarations, then
+# keeps only the pin's own message. Syntax check only, no object files.
+#
+#   make gtk-bundle-check GTK_BUNDLE=macos-gtk-2.88
+#
+##############################################################################
+
+.PHONY: gtk-bundle-check
+gtk-bundle-check:
+	@if [ -z "$(GTK_BUNDLE)" ]; then \
+		echo "usage: make gtk-bundle-check GTK_BUNDLE=<dir>"; \
+		exit 1; \
+	fi
+	@echo "Check for glib API newer than $(GTK_BUNDLE_GLIB_VERSION)..."
+	@hits=$$(for f in $(SOURCES) $(CPP_SOURCES); do \
+		$(COMPILE) -Wdeprecated-declarations -fsyntax-only $$f 2>&1 || exit 1; \
+	done | grep "warning:.*Not available before" || true); \
+	if [ -n "$$hits" ]; then \
+		echo "ERROR: glib API newer than $(GTK_BUNDLE_GLIB_VERSION) is used:"; \
+		echo "$$hits"; \
+		exit 1; \
+	fi; \
+	echo "OK: no glib API newer than $(GTK_BUNDLE_GLIB_VERSION)."
+
+##############################################################################
+#
+# Seed a GTK_BUNDLE directory from an existing .app that carries a known good
+# GTK stack. Copies the dylibs, the gdk-pixbuf loaders cache and the glib
+# schemas; the source .app is only read, never modified.
+#
+#   make gtk-bundle-seed GTK_BUNDLE=macos-gtk-2.88 GTK_BUNDLE_FROM=/path/to/deskHPSDR.app
+#
+##############################################################################
+
+.PHONY: gtk-bundle-seed
+gtk-bundle-seed:
+	@if [ -z "$(GTK_BUNDLE)" ] || [ -z "$(GTK_BUNDLE_FROM)" ]; then \
+		echo "usage: make gtk-bundle-seed GTK_BUNDLE=<dir> GTK_BUNDLE_FROM=<path to a .app>"; \
+		exit 1; \
+	fi
+	@if [ ! -d "$(GTK_BUNDLE_FROM)/Contents/Frameworks" ]; then \
+		echo "ERROR: $(GTK_BUNDLE_FROM)/Contents/Frameworks not found"; \
+		exit 1; \
+	fi
+	@echo "Seed $(GTK_BUNDLE) from $(GTK_BUNDLE_FROM)..."
+	@rm -rf "$(GTK_BUNDLE)/Frameworks" "$(GTK_BUNDLE)/Resources"
+	@mkdir -p "$(GTK_BUNDLE)/Frameworks" "$(GTK_BUNDLE)/Resources/share/glib-2.0"
+	@cp -R "$(GTK_BUNDLE_FROM)/Contents/Frameworks/"* "$(GTK_BUNDLE)/Frameworks/"
+	@cp "$(GTK_BUNDLE_FROM)/Contents/Resources/gdk-pixbuf-loaders.cache" "$(GTK_BUNDLE)/Resources/"
+	@cp -R "$(GTK_BUNDLE_FROM)/Contents/Resources/share/glib-2.0/schemas" \
+		"$(GTK_BUNDLE)/Resources/share/glib-2.0/"
+	@echo "Seeded $$(ls "$(GTK_BUNDLE)/Frameworks" | wc -l | tr -d ' ') files into $(GTK_BUNDLE)/Frameworks"
+	@otool -L "$(GTK_BUNDLE)/Frameworks/libglib-2.0.0.dylib" | sed -n '2p'
+
 .PHONY: install install-Darwin install-Linux
 
 install: prepare install-$(UNAME_S)
@@ -1200,6 +1332,20 @@ all: prepare $(PROGRAM)
 
 install-Darwin: all
 	@echo "Install deskHPSDR for macOS..."
+ifneq ($(GTK_BUNDLE),)
+	@src="$$(cd "$(GTK_BUNDLE)" 2>/dev/null && pwd)"; \
+	if [ -z "$$src" ] || [ ! -d "$$src/Frameworks" ] || [ ! -d "$$src/Resources" ]; then \
+		echo "ERROR: GTK_BUNDLE=$(GTK_BUNDLE) has no Frameworks/ and Resources/."; \
+		echo "Seed it with: make gtk-bundle-seed GTK_BUNDLE=$(GTK_BUNDLE) GTK_BUNDLE_FROM=/path/to/deskHPSDR.app"; \
+		exit 1; \
+	fi; \
+	dsk="$$(cd "$(DESKTOP_DIR)" 2>/dev/null && pwd)"; \
+	case "$$src/" in \
+		"$$dsk"/*|"$(CURRDIR)/deskHPSDR.app"/*) \
+			echo "ERROR: GTK_BUNDLE is inside a directory install-Darwin erases."; \
+			exit 1;; \
+	esac
+endif
 	@echo "Remove further compiled deskHPSDR..."
 	@rm -rf deskHPSDR.app
 	@echo "Remove old deskHPSDR.app container from \"$(DESKTOP_DIR)\" ..."
@@ -1222,6 +1368,26 @@ install-Darwin: all
 	@cp -R fonts/ttf/JetBrainsMono deskHPSDR.app/Contents/Resources/fonts/
 	@cp -R fonts/ttf/Digital deskHPSDR.app/Contents/Resources/fonts/
 	@cp -R fonts/otf/GNU deskHPSDR.app/Contents/Resources/fonts/
+ifneq ($(GTK_BUNDLE),)
+	@echo "Copy the bundled GTK stack from $(GTK_BUNDLE)..."
+	@cp -R "$(GTK_BUNDLE)/Frameworks/"* deskHPSDR.app/Contents/Frameworks/
+	@cp -R "$(GTK_BUNDLE)/Resources/"* deskHPSDR.app/Contents/Resources/
+	@echo "Point the executable at Contents/Frameworks..."
+	@otool -L deskHPSDR.app/Contents/MacOS/deskhpsdr | tail -n +2 | awk '{print $$1}' | \
+		grep '^@loader_path/' | while read -r dep; do \
+			install_name_tool -change "$$dep" \
+				"@executable_path/../Frameworks/$${dep#@loader_path/}" \
+				deskHPSDR.app/Contents/MacOS/deskhpsdr; \
+		done
+	@bad=$$(otool -L deskHPSDR.app/Contents/MacOS/deskhpsdr | tail -n +2 | awk '{print $$1}' | \
+		grep -E '^(@loader_path|/opt/homebrew|/usr/local/(opt|Cellar))' || true); \
+	if [ -n "$$bad" ]; then \
+		echo "ERROR: the executable still references libraries outside the bundle:"; \
+		echo "$$bad"; \
+		exit 1; \
+	fi
+	@echo "Bundled GTK stack verified."
+endif
 	@if [ -x /usr/bin/codesign ]; then \
 		echo "Strip extended attributes before codesigning..."; \
 		xattr -cr deskHPSDR.app; \
