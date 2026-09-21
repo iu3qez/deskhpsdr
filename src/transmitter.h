@@ -231,6 +231,11 @@ extern TRANSMITTER *tx_create_transmitter(int id, int pixels, int width, int hei
 
 void tx_create_dialog(TRANSMITTER *tx);
 void tx_create_levels_window(TRANSMITTER *tx);
+//
+// GTK only: call these on the main loop, never from the RF path.
+//
+void tx_levels_show(TRANSMITTER *tx);
+void tx_levels_hide(TRANSMITTER *tx);
 void tx_reconfigure(TRANSMITTER *tx, int pixels, int width, int height);
 
 //

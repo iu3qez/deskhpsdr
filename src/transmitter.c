@@ -2420,7 +2420,12 @@ void tx_set_analyzer(const TRANSMITTER *tx) {
 }
 
 // --- TX Levels: Fenster steuern ---
-static inline void tx_levels_show(TRANSMITTER *tx) {
+//
+// These two touch GTK, so they must run on the main loop. tx_on()/tx_off()
+// are part of the RF path and may be called from another thread, therefore
+// the callers in rxtx() show and hide the window, not tx_on()/tx_off().
+//
+void tx_levels_show(TRANSMITTER *tx) {
   int txmode = vfo_get_tx_mode();
   if (!tx || !tx->show_levels || tune) { return; }
   if (tx->levels_dialog) { return; }                 // schon offen
@@ -2429,7 +2434,7 @@ static inline void tx_levels_show(TRANSMITTER *tx) {
   tx_panadapter_update(tx);                      // sofort erster Frame
 }
 
-static inline void tx_levels_hide(TRANSMITTER *tx) {
+void tx_levels_hide(TRANSMITTER *tx) {
   if (!tx) { return; }
   if (tx->levels_surface) { cairo_surface_destroy(tx->levels_surface); tx->levels_surface = NULL; }
   if (tx->levels_dialog)  {
@@ -2443,13 +2448,11 @@ static inline void tx_levels_hide(TRANSMITTER *tx) {
 void tx_off(const TRANSMITTER *tx) {
   // switch TX OFF, wait until slew-down completed
   SetChannelState(tx->id, 0, 1);
-  tx_levels_hide((TRANSMITTER *) tx);
 }
 
 void tx_on(const TRANSMITTER *tx) {
   // switch TX ON
   SetChannelState(tx->id, 1, 0);
-  tx_levels_show((TRANSMITTER *) tx);
 }
 
 void tx_ps_getinfo(const TRANSMITTER *tx, int *info) {

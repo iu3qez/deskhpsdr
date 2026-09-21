@@ -62,3 +62,4 @@ MacOS/build-*.sh
 rx200-sim*
 miniaudio/*.txt
 miniaudio/test*
+macos-gtk-*/
