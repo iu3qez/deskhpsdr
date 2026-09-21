@@ -108,8 +108,8 @@ static enum ACTIONtype thisType;
 static int thisAction;
 
 //
-// While choosing an action in the dialog, new incoming events
-// shall not have any effect
+// While choosing an action in the dialog, or while editing one of the WHEEL
+// parameter spin buttons, new incoming events shall not have any effect
 //
 static int ignore_incoming_events = 0;
 
@@ -294,6 +294,33 @@ static void find_current_cmd(void) {
     cmd = cmd->next;
   }
   current_cmd = cmd;
+}
+
+//
+// While one of the WHEEL parameter spin buttons has the keyboard focus, incoming
+// MIDI events must not reach the dialog. ProcessNewMidiConfigureEvent() would reset
+// thisVfl1 ... thisVfr2 to the defaults and update_wheelparams() would overwrite the
+// value being typed, so with a controller that sends continuously the spin buttons
+// cannot be edited at all.
+//
+static gboolean wheelparam_focus_cb(GtkWidget *widget, GdkEventFocus *event, gpointer user_data) {
+  (void)widget;
+  (void)event;
+
+  if (GPOINTER_TO_INT(user_data)) {
+    ignore_incoming_events = 1;
+  } else if (dialog != NULL && gtk_window_has_toplevel_focus(GTK_WINDOW(dialog))) {
+    //
+    // GTK also sends focus-out to the focused widget when the whole window becomes
+    // inactive (window_update_has_focus() in gtk/gtkwindow.c calls do_focus_change()).
+    // has_toplevel_focus is already FALSE at that point, and that case is not the user
+    // leaving the spin button, so keep the guard. The matching focus-in arrives when
+    // the window becomes active again.
+    //
+    ignore_incoming_events = 0;
+  }
+
+  return FALSE;
 }
 
 static void wheelparam_cb(GtkWidget *widget, gpointer user_data) {
@@ -817,6 +844,19 @@ void midi_menu(GtkWidget *parent) {
   set_vfr2 = gtk_spin_button_new_with_range(-1.0, 127.0, 1.0);
   gtk_grid_attach(GTK_GRID(WheelGrid), set_vfr2, col, row, 1, 1);
   g_signal_connect(set_vfr2, "value-changed", G_CALLBACK(wheelparam_cb), GINT_TO_POINTER(13));
+  //
+  // Suppress incoming MIDI events while one of the wheel parameters is being edited
+  //
+  GtkWidget *wheel_spin[] = {
+    set_vfl1, set_vfl2, set_fl1,  set_fl2,  set_lft1, set_lft2,
+    set_rgt1, set_rgt2, set_fr1,  set_fr2,  set_vfr1, set_vfr2
+  };
+
+  for (unsigned int i = 0; i < sizeof(wheel_spin) / sizeof(wheel_spin[0]); i++) {
+    g_signal_connect(wheel_spin[i], "focus-in-event",  G_CALLBACK(wheelparam_focus_cb), GINT_TO_POINTER(1));
+    g_signal_connect(wheel_spin[i], "focus-out-event", G_CALLBACK(wheelparam_focus_cb), GINT_TO_POINTER(0));
+  }
+
   gtk_container_add(GTK_CONTAINER(content), grid);
   gtk_container_add(GTK_CONTAINER(WheelContainer), WheelGrid);
   sub_menu = dialog;
