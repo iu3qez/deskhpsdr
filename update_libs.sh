@@ -64,7 +64,10 @@ if [ "$OS_TYPE" = "Darwin" ]; then
     exit 1
   fi
     $BREW update
-    $BREW upgrade
+    # No unconditional "$BREW upgrade" here. It upgrades every formula
+    # installed on the machine, not just what deskHPSDR needs, and the
+    # install lines below already pull what the build requires. glib
+    # 2.90.0 arriving this way broke CW keying on macOS.
     $BREW install perl
     $BREW install gettext
     $BREW install libtool
