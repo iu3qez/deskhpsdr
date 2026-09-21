@@ -2204,9 +2204,22 @@ static void radio_tx_notify(int state, int was_tune) {
 // main loop uses this. The converger is queued, not called, because the
 // caller assigns mox/vox/tune only after this function returns.
 //
+// The converger is queued below G_PRIORITY_DEFAULT_IDLE on purpose. The keyer
+// thread posts its transmit requests with plain g_idle_add(ext_mox_update),
+// which is G_PRIORITY_DEFAULT_IDLE (src/iambic.c:365 and :401), so at equal
+// priority a re-key request would be served after a panel restore that is
+// still queued from the previous release. Until the panel work moved out of
+// this function it ran inline, before mox was assigned, and was therefore
+// always finished by the time the keyer observed the transition. Queueing the
+// converger lower restores that ordering: keying overtakes cosmetic work.
+//
+// Delaying it is safe by construction. The converger takes no argument and
+// converges to the current transmit state (KTD2), so running late changes only
+// when the panels catch up, never what they converge to.
+//
 static void rxtx(int state) {
   rxtx_rf(state);
-  g_idle_add(radio_tx_gui_sync, NULL);
+  g_idle_add_full(G_PRIORITY_LOW, radio_tx_gui_sync, NULL, NULL);
 }
 
 void radio_mox_update(int state) {
