@@ -34,7 +34,7 @@ DEVEL    ?= OFF
 #  SATURN       | If ON, compile with native SATURN/G2 XDMA support
 #  USBOZY       | If ON, deskHPSDR can talk to legacy USB OZY radios (needs  libusb-1.0)
 #  STEMLAB      | If ON, deskHPSDR can start SDR app on RedPitay via Web interface (needs libcurl)
-#  AUDIO        | DEFAULT uses native CoreAudio on macOS and miniaudio on Linux
+#  AUDIO        | DEFAULT uses native CoreAudio and as option miniaudio on macOS and miniaudio on Linux
 #  AUTOGAIN     | If ON (only if using a Hermes Lite 2 or similar), activate automatic regulation of RxPGA gain
 #  AH4IOB       | If ON, enable support for AH-4 compatible ATU using the Hermes Lite 2 IO board
 #  DEVEL        | ONLY FOR INTERNAL DEVELOPER USE AND TESTING ! Leave it ever OFF please !
@@ -203,6 +203,9 @@ FFTW_LOCAL_DOUBLE_LIB := $(FFTW_LOCAL_DOUBLE)/lib/libfftw3.a
 FFTW_LOCAL_FLOAT_LIB := $(FFTW_LOCAL_FLOAT)/lib/libfftw3f.a
 
 FFTW_LOCAL_COMPLETE := $(and $(wildcard $(FFTW_LOCAL_DOUBLE)/include/fftw3.h),$(wildcard $(FFTW_LOCAL_DOUBLE_LIB)),$(wildcard $(FFTW_LOCAL_FLOAT_LIB)))
+
+$(info Allow git rebase, this is required.)
+$(shell git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git config pull.rebase true)
 
 ifneq ($(FFTW_LOCAL_COMPLETE),)
 $(info Local FFTW 3.3.11 found, using static libraries.)
@@ -430,16 +433,12 @@ CPP_DEFINES += -D__WAYLAND__
 ##############################################################################
 
 ifeq ($(UNAME_S), Darwin)
-  ifeq ($(AUDIO), DEFAULT)
+  ifneq ($(AUDIO), MINIAUDIO)
     override AUDIO := COREAUDIO
   endif
 endif
+
 ifeq ($(UNAME_S), Linux)
-  ifeq ($(AUDIO), PULSE)
-    $(warning AUDIO=PULSE is obsolete; using AUDIO=MINIAUDIO)
-  else ifeq ($(AUDIO), ALSA)
-    $(warning AUDIO=ALSA is obsolete; using AUDIO=MINIAUDIO)
-  endif
   override AUDIO := MINIAUDIO
 endif
 
